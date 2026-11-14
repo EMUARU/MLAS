@@ -96,6 +96,7 @@ start.bat 會開兩個終端機分別跑前後端，好了會自動開瀏覽器�
         test_api_routes.py          Flask API：前端請求 → 組參數 → 啟動腳本 → 解析輸出 → 任務狀態
         test_synthetic_pipeline.py  實際執行合成資料完整流程（CTGAN/TVAE/TabDDPM、分群、約束、TGANT）
         test_tabpfn_pipeline.py     實際執行 TabPFN 訓練（需權重，設 MLAS_RUN_TABPFN=1 才執行）
+        test_regression_models.py   原系統回歸：讀取 test_all.bat 的 81 個案例執行（需 GPU）
 
 執行方式（在 backend 目錄）:
 
@@ -109,15 +110,19 @@ start.bat 會開兩個終端機分別跑前後端，好了會自動開瀏覽器�
 
 測試只確認功能與流程正確，不評估生成品質；生成品質由論文中的消融實驗驗證。
 
-### 原系統的回歸測試（test_all.bat）
+### 原系統的回歸測試（test_all.bat，已整合進 pytest）
 
-backend/test_all.bat（Windows，在 backend 目錄執行）會先產生二元與多類別的測試資料，
-再依序執行 81 個案例，每個案例印出 OK 或 FAIL:
+backend/test_all.bat 是 81 個回歸案例的清單。tests/integration/test_regression_models.py
+會讀取它並以 pytest 執行（另外檢查腳本回報的錯誤），也可以在 Windows 上直接執行 .bat 只看 OK / FAIL。
+案例內容:
 
 - 訓練（train_test_split）: 10 種模型（九種傳統模型 + TabPFN）× 二元／多類別
 - 訓練（k_fold）、評估、檔案預測: 各 10 個
 - 手動輸入預測: 5 個
 - 堆疊學習: 單一 base model、兩兩組合、三個以上組合、不同 meta model
+
+其中 3 個案例（train_mlp.py 多類別、train_adaboost.py 多類別 k_fold）為已知問題，
+詳見 backend/tests/README.md。
 
 ## 部署（正式站）
 

@@ -1,17 +1,20 @@
-# MLAS 擴充功能測試說明
+# MLAS 測試說明
 
-本資料夾是針對本研究擴充功能（合成資料生成、欄位約束、TGANT 蒸餾、TabPFN 整合）的
-自動化測試，使用 pytest。原系統各模型的回歸測試另見 backend/test_all.bat。
+本資料夾是 MLAS 的自動化測試，使用 pytest，包含：
+- 本研究擴充功能（合成資料生成、欄位約束、TGANT 蒸餾、TabPFN 整合）的單元與整合測試
+- 原系統各模型的回歸測試（讀取 backend/test_all.bat 的 81 個案例執行）
 
 ## 測試總數
 
-| 類型 | 數量 | 執行時間（開發環境實測） |
+| 類型 | 數量 | 說明 |
 | --- | --- | --- |
-| 單元測試 | 197 | 約 20 秒（與快速整合測試合計） |
-| 整合測試 | 25 | 快速 14 個；需實際訓練的 11 個約 5–6 分鐘 |
-| 合計 | 222 | 2026-11-15 於開發環境（Windows、Python 3.11）全部通過 |
+| 單元測試 | 197 | 擴充功能，約 20 秒 |
+| 整合測試（擴充功能） | 25 | API 14 個；實際訓練 11 個，約 5–6 分鐘 |
+| 整合測試（原系統回歸） | 81 | 各模型訓練、評估、預測、堆疊學習 |
+| 合計 | 303 | |
 
-另有原系統回歸測試 test_all.bat：81 個案例。
+擴充功能的 222 個已於 2026-11-15 在開發環境（Windows、Python 3.11、GPU）全部通過。
+原系統回歸的 81 個中，有 3 個標記為已知問題（見下方）。
 
 數量說明：pytest 以「參數化」把每個邊界值、每種運算子各算一個案例，
 例如自動參數的 12 個分段邊界由同一個測試函式產生 12 個案例。
@@ -37,6 +40,22 @@
 | test_api_routes.py | 14 | Flask API：/run-synthetic 的 21 個參數順序與預設值、約束 JSON、從套件雜訊中找出結果 JSON、失敗與終止處理、status.json 更新；/run-train-tabpfn 的選用參數；/download-synthetic |
 | test_synthetic_pipeline.py | 9 | 實際執行 run_synthetic.py：CTGAN/TVAE 混合模式、分群模式、倍數寫法、欄位約束 100% 合規、TGANT 蒸餾、無標籤欄位、錯誤處理、TabDDPM |
 | test_tabpfn_pipeline.py | 2 | 實際執行 train_tabpfn.py（train_test_split、k_fold），需下載權重 |
+| test_regression_models.py | 81 | 讀取 test_all.bat 的案例執行：10 種模型的訓練（train_test_split、k_fold）、評估、檔案與手動輸入預測、堆疊學習。除結束碼外，也檢查輸出沒有 "status": "error" |
+
+### 已知問題（回歸測試中標記為 xfail）
+
+test_all.bat 只看結束碼，下列案例在 .bat 顯示 OK，但腳本實際回傳錯誤。
+原因是多類別時 confusion_matrix 為 N×N，程式卻以 tn, fp, fn, tp 四個值展開：
+
+- train_mlp.py：多類別 train_test_split、多類別 k_fold
+- train_adaboost.py：多類別 k_fold
+
+修正後，pytest 會因「預期失敗卻通過」提示移除標記。
+
+## 與 test_all.bat 的關係
+
+兩者共用同一份案例清單（test_all.bat）。Windows 上仍可直接執行 test_all.bat 快速看 OK / FAIL；
+pytest 版本把輸出寫在暫存資料夾，並多檢查腳本回報的錯誤，結果也會出現在 GitHub Actions。
 
 ## 測試規範
 
@@ -66,4 +85,5 @@
         conftest.py           共用測試資料（fixture）與自動跳過規則
         fakes.py              替身：假的 TabPFN
         unit/                 單元測試
-        integration/          整合測試
+        integration/          整合測試（含原系統回歸 test_regression_models.py）
+      test_all.bat            回歸案例清單（亦可單獨在 Windows 執行）
