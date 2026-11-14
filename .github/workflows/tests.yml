@@ -1,0 +1,26 @@
+name: backend-tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-test.txt
+      - name: Unit + API integration tests
+        run: pytest -m "not slow" -q
+      - name: Synthetic pipeline integration tests
+        run: pytest -m slow -q

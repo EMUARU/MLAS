@@ -80,6 +80,37 @@ start.bat 會開兩個終端機分別跑前後端，好了會自動開瀏覽器�
 
 ## 測試
 
+### 擴充功能的自動化測試（pytest）
+
+位於 backend/tests/，涵蓋本研究擴充的合成資料、欄位約束、TGANT 與 TabPFN:
+
+    backend/tests/
+      unit/                         單元測試（不需 GPU，數秒內跑完）
+        test_constraints.py         約束解析（5 種單欄位約束、9 種條件運算子）、前置／後置過濾、回退機制
+        test_auto_params.py         依樣本數自動調整參數的各分段邊界
+        test_metrics.py             JS/KL 散度性質、ML Efficacy、Discriminator Measure、Fidelity
+        test_tgant.py               TGANT 蒸餾：濾除標籤雜訊、收斂、最大代數、第二階段開關
+        test_tabpfn.py              TabPFN 整合層：裝置選擇、ensemble 數量防呆、權重版本、錯誤處理
+        test_utils.py / test_cli.py 資料前處理、輸出檔名、命令列參數錯誤
+      integration/                  整合測試
+        test_api_routes.py          Flask API：前端請求 → 組參數 → 啟動腳本 → 解析輸出 → 任務狀態
+        test_synthetic_pipeline.py  實際執行合成資料完整流程（CTGAN/TVAE/TabDDPM、分群、約束、TGANT）
+        test_tabpfn_pipeline.py     實際執行 TabPFN 訓練（需權重，設 MLAS_RUN_TABPFN=1 才執行）
+
+執行方式（在 backend 目錄）:
+
+    pip install -r requirements-test.txt
+    pytest -m "not slow"     # 單元測試 + API 整合測試
+    pytest -m slow           # 實際訓練生成器的整合測試（較慢）
+    pytest                   # 全部
+
+需要 synthcity、tabpfn 的測試在未安裝時會自動跳過。
+每次 push 會由 GitHub Actions（.github/workflows/tests.yml）自動執行。
+
+測試只確認功能與流程正確，不評估生成品質；生成品質由論文中的消融實驗驗證。
+
+### 原系統的回歸測試（test_all.bat）
+
 backend/test_all.bat（Windows，在 backend 目錄執行）會先產生二元與多類別的測試資料，
 再依序執行 81 個案例，每個案例印出 OK 或 FAIL:
 
@@ -87,8 +118,6 @@ backend/test_all.bat（Windows，在 backend 目錄執行）會先產生二元�
 - 訓練（k_fold）、評估、檔案預測: 各 10 個
 - 手動輸入預測: 5 個
 - 堆疊學習: 單一 base model、兩兩組合、三個以上組合、不同 meta model
-
-合成資料生成未包含在這支腳本中，請從前端合成資料頁面測試。
 
 ## 部署（正式站）
 
@@ -121,7 +150,8 @@ upload/、model/、listWhite.txt。
       cleaner.py            定期清 upload/ 和 model/ 的背景執行緒
       tool_*.py             開發工具（版本檢查、xlsx 合併等），非執行必需
       listWhite.txt         登入白名單（不進版控，參考 listWhite.example.txt 建立）
-      test_all.bat          後端自動化測試
+      tests/                pytest 單元測試與整合測試
+      test_all.bat          原系統各模型的回歸測試
       upload/{user}/        使用者上傳檔（會被定期清）
       model/{user}/{ts}/    訓練結果（會被定期清）
 
