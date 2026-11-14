@@ -20,6 +20,33 @@ import pandas as pd
 from tool_train import prepare_data, NumpyEncoder, extract_base64_images_and_clean_json
 import argparse
 
+def parse_base_models(value: str):
+    """
+    解析 base_models：
+      - 先嘗試當成 JSON 解析，例如 '["xgb","lgbm"]'
+      - 失敗時，再支援 '[xgb,lgbm]' 或 'xgb,lgbm' 這種格式
+    """
+    value = value.strip()
+    # 先試標準 JSON
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+
+    # 去掉外層中括號（若有）
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+
+    # 用逗號切開，清掉多餘空白與引號
+    parts = [v.strip().strip('"').strip("'") for v in value.split(",") if v.strip()]
+    if not parts:
+        raise argparse.ArgumentTypeError(f"invalid base_models value: {value}")
+
+    return parts
+
+
 def save_meta_features_csv(meta_X, y, base_models, task_dir, filename):
     os.makedirs(task_dir, exist_ok=True)
     df = pd.DataFrame(meta_X, columns=base_models)
@@ -27,6 +54,19 @@ def save_meta_features_csv(meta_X, y, base_models, task_dir, filename):
     path = os.path.join(task_dir, filename)
     df.to_csv(path, index=False)
     return
+
+
+def save_stacking_config(base_models, meta_model, n_features, task_dir):
+    """儲存 stacking_config.json，供 getFieldNumber.py 和 predict.py 使用"""
+    config = {
+        "base_models": base_models,
+        "meta_model": meta_model,
+        "n_features": n_features
+    }
+    config_path = os.path.join(task_dir, "stacking_config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    return config_path
 
 
 def main(file_path, base_models, label_column, meta_model, task_dir):
@@ -47,6 +87,16 @@ def main(file_path, base_models, label_column, meta_model, task_dir):
         return
     os.makedirs(task_dir, exist_ok=True)
 
+    # ✅ 儲存 stacking_config.json（包含 n_features）
+    n_features = X.shape[1]
+    save_stacking_config(base_models, meta_model, n_features, task_dir)
+
+    # ✅ 自動偵測分類數，設定 focus_class
+    num_class = int(len(np.unique(y)))
+    focus_class = 1  # 預設用 class 1
+    results["num_class"] = num_class
+    results["focus_class"] = focus_class
+
     # 2. K-Fold 切分
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     folds = list(kf.split(X))  # 確保所有 model 用相同 folds
@@ -61,7 +111,7 @@ def main(file_path, base_models, label_column, meta_model, task_dir):
         for name in base_models:
             module = import_module(f"stacking_{name}")
             preds = module.train_fold(
-                X_train, y_train, X_val
+                X_train, y_train, X_val, focus_class=focus_class
             )
             meta_features[name][val_idx] = preds
     # 組成 meta_X，真實標籤用 y
@@ -70,28 +120,30 @@ def main(file_path, base_models, label_column, meta_model, task_dir):
 
     # 4. 訓練 meta model (OOF 階段)
     meta_module = import_module(f"stacking_{meta_model}")
-    meta_results =  meta_module.retrain(meta_X, y, base_models, task_dir, '0.8', False, 'meta')
+    meta_results = meta_module.retrain(meta_X, y, base_models, task_dir, '0.8', False, 'meta', focus_class=focus_class)
     results["meta_results"] = meta_results
 
     # 5. Retrain base models on full data
     for name in base_models:
         module = import_module(f"stacking_{name}")
-        base_result = module.retrain(X, y, feature_names, task_dir, '0.8', True, 'base')
+        base_result = module.retrain(X, y, feature_names, task_dir, '0.8', True, 'base', focus_class=focus_class)
         results["base_results"][f"{name}"] = base_result
 
     # 6. Retrain meta model on full data
     X_full_meta = []
     for name in base_models:
         module = import_module(f"stacking_{name}")
-        preds = module.predict_full_meta(X, task_dir)
+        preds = module.predict_full_meta(X, task_dir, focus_class=focus_class)
         X_full_meta.append(preds)
     X_full_meta = np.column_stack(X_full_meta)
     save_meta_features_csv(X_full_meta, y, base_models, task_dir, 'X_full_meta.csv')
 
     # 使用 retrain 函數訓練 meta model，儲存為 final 版本
     meta_module = import_module(f"stacking_{meta_model}")
-    final_meta_result = meta_module.retrain(X_full_meta, y, base_models, task_dir, '1.0', True, 'meta')
+    final_meta_result = meta_module.retrain(X_full_meta, y, base_models, task_dir, '1.0', True, 'meta', focus_class=focus_class)
 
+    # ✅ 將 n_features 加入結果
+    results["n_features"] = n_features
     results["task_dir"] = task_dir
     result_json_path = os.path.join(task_dir, "metrics.json")
     with open(result_json_path, "w", encoding="utf-8") as f:
@@ -103,7 +155,7 @@ def main(file_path, base_models, label_column, meta_model, task_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("file_path", type=str)
-    parser.add_argument('base_models', type=json.loads) # JSON list of model names, e.g. \'["xgb","lgbm"]\'
+    parser.add_argument('base_models', type=parse_base_models) # JSON list of model names, e.g. \'["xgb","lgbm"]\'
     parser.add_argument("label_column", type=str)
     parser.add_argument("meta_model", type=str)
     parser.add_argument("task_dir", type=str)

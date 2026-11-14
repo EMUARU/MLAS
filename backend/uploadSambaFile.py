@@ -1,5 +1,6 @@
 # usage: python uploadSambaFile.py a2556 rkothebest51 "\\LAPTOP-BENDAENK\tmp\高醫訓練csv.csv" upload
 # usage: python uploadSambaFile.py a2556 rkothebest51 "\\LAPTOP-BOEB9U25\tmp\高醫訓練csv.csv" upload
+# usage: python uploadSambaFile.py <username> <password> "\\<HOSTNAME>\<share>\<file>.csv" upload
 
 import subprocess
 import sys

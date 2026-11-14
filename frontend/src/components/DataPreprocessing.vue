@@ -20,6 +20,7 @@
           <option value="condition">{{ $t('lblConditionValidation') }}</option>
           <option value="not_missing">{{ $t('lblHasValue') }}</option>
           <option value="drop_feature">{{ $t('lblDropFeature') }}</option>
+          <option value="encode_label">{{ $t('lblEncodeLabel') }}</option>
         </select>
       </div>
 
@@ -55,6 +56,11 @@
           />
           <div v-if="errors.fallbackValue" class="text-danger small">{{ errors.fallbackValue }}</div>
         </div>
+      </div>
+
+      <!-- encode_label 不需要 fallback,顯示說明 -->
+      <div v-if="expectType === 'encode_label'" class="alert alert-info small mb-2">
+        {{ $t('msgEncodeLabelHint') }}
       </div>
 
       <!-- 按鈕 -->
@@ -95,12 +101,18 @@
                 <template v-if="rule.expect_type === 'drop_feature'">
                   {{ $t('lblDropFeature') }}
                 </template>
+                <template v-if="rule.expect_type === 'encode_label'">
+                  {{ $t('lblEncodeLabel') }}
+                </template>
               </td>
               <td>
                 <template v-if="rule.fallback_type === 'custom'">
                   {{ rule.fallback_value }}
                 </template>
-                <template v-if="rule.expect_type === 'drop_feature'">
+                <template v-else-if="rule.expect_type === 'drop_feature'">
+                  -
+                </template>
+                <template v-else-if="rule.expect_type === 'encode_label'">
                   -
                 </template>
                 <template v-else>
@@ -251,7 +263,10 @@ export default {
       const rule = {
         column: this.selectedColumn,
         expect_type: this.expectType,
-        fallback_type: this.fallbackType,
+      }
+      // encode_label 跟 drop_feature 不需要 fallback_type
+      if (this.expectType !== 'drop_feature' && this.expectType !== 'encode_label') {
+        rule.fallback_type = this.fallbackType
       }
       if (this.expectType === 'condition') {
         rule.expect_condition = this.expectCondition
@@ -269,6 +284,12 @@ export default {
           return r.expect_condition !== rule.expect_condition
         }
         if (rule.expect_type === 'not_missing' && r.expect_type === 'not_missing') {
+          return false
+        }
+        if (rule.expect_type === 'drop_feature' && r.expect_type === 'drop_feature') {
+          return false
+        }
+        if (rule.expect_type === 'encode_label' && r.expect_type === 'encode_label') {
           return false
         }
         return true

@@ -20,6 +20,8 @@ import io
 from docx import Document
 from cleaner import scheduled_clean
 import threading
+import sys
+import uuid
 
 # 建立 Flask 應用，指定靜態資源位置（給 Vue build 後的檔案用）
 app = Flask(__name__, static_folder='static', static_url_path='')
@@ -39,8 +41,8 @@ def not_found(e):
 process_pool = {}
 
 # 定時清理 model/ 和 upload/，到 cleaner.py 設定時間
-t = threading.Thread(target=scheduled_clean, daemon=True)
-t.start()
+# t = threading.Thread(target=scheduled_clean, daemon=True)
+# t.start()
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -92,7 +94,7 @@ def list_files():
     
     try:
         fetch_result = subprocess.run(
-            ['python', 'listFiles.py', folder_path] + extensions,
+            [sys.executable, 'listFiles.py', folder_path] + extensions,
             # capture_output=True,  # 捕獲標準輸出和標準錯誤
             stdout=subprocess.PIPE,     # 只捕獲標準輸出
             stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -124,7 +126,7 @@ def get_field_number():
     
     try:
         # fetch_result = subprocess.run(
-        #     ['python', 'getFieldNumber.py', model_path],
+        #     [sys.executable, 'getFieldNumber.py', model_path],
         #     # capture_output=True,  # 捕獲標準輸出和標準錯誤
         #     stdout=subprocess.PIPE,     # 只捕獲標準輸出
         #     stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -144,7 +146,7 @@ def get_field_number():
         # return jsonify(json.loads(fetch_result.stdout))
 
         args = [
-            'python', 'getFieldNumber.py',
+            sys.executable, 'getFieldNumber.py',
             model_path
         ]
         # 執行 Python 訓練腳本（非阻塞，可終止）
@@ -186,7 +188,7 @@ def run_train_xgb():
 
     try:
         # result = subprocess.run(
-        #     ['python', 'train_xgb.py', file_path, label_column, split_strategy, split_value, model_name, n_estimators, learning_rate, max_depth],
+        #     [sys.executable, 'train_xgb.py', file_path, label_column, split_strategy, split_value, model_name, n_estimators, learning_rate, max_depth],
         #     # capture_output=True,        # 捕獲標準輸出和標準錯誤
         #     stdout=subprocess.PIPE,     # 只捕獲標準輸出
         #     stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -220,7 +222,7 @@ def run_train_xgb():
         with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
             json.dump(status, f, indent=4, ensure_ascii=False)
         args = [
-            'python', 'train_xgb.py',
+            sys.executable, 'train_xgb.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             n_estimators, learning_rate, max_depth,
@@ -313,7 +315,7 @@ def run_train_lgbm():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_lgbm.py',
+            sys.executable, 'train_lgbm.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             n_estimators, learning_rate, max_depth, num_leaves,
@@ -406,7 +408,7 @@ def run_train_rf():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_rf.py',
+            sys.executable, 'train_rf.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             n_estimators, max_depth, random_state, n_jobs,
@@ -497,7 +499,7 @@ def run_train_lr():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_lr.py',
+            sys.executable, 'train_lr.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             penalty, C, max_iter,
@@ -589,7 +591,7 @@ def run_train_tabnet():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_tabnet.py',
+            sys.executable, 'train_tabnet.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             batch_size, max_epochs, patience,
@@ -685,7 +687,7 @@ def run_train_mlp():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_mlp.py',
+            sys.executable, 'train_mlp.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             hidden_layer_1, hidden_layer_2, hidden_layer_3,
@@ -778,7 +780,7 @@ def run_train_catboost():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_catboost.py',
+            sys.executable, 'train_catboost.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             iterations, learning_rate, depth,
@@ -870,7 +872,7 @@ def run_train_adaboost():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_adaboost.py',
+            sys.executable, 'train_adaboost.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             n_estimators, learning_rate, depth,
@@ -961,7 +963,7 @@ def run_train_svm():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_svm.py',
+            sys.executable, 'train_svm.py',
             file_path, label_column, split_strategy,
             split_value, model_name,
             C, kernel,
@@ -1021,6 +1023,149 @@ def run_train_svm():
             "status": "error",
             "message": str(e)
         })
+    
+
+@app.route('/run-train-tabpfn', methods=['POST'])
+def run_train_tabpfn():
+    # print("[DEBUG] run_train_tabpfn called", flush=True)
+
+    data = request.get_json()
+    file_path       = data.get('file_path')
+    label_column    = data.get('label_column')
+    split_strategy  = data.get('split_strategy')
+    split_value     = data.get('split_value')
+    model_name      = data.get('model_name')
+    username        = data.get('username')
+
+    # TabPFN 相關超參數（前端有給就帶，沒給就略過）
+    device         = data.get('device')          # "auto" / "cpu" / "cuda"
+    model_version  = data.get('model_version')   # "default" / "v2" ...
+    n_ensembles    = data.get('n_ensembles')     # int 或字串，0 代表用預設設定
+
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        task_id   = f"{timestamp}"
+        task_dir  = os.path.join("model", username, timestamp)   # model/<username>/<timestamp>/
+        os.makedirs(task_dir, exist_ok=True)
+
+        # 先寫入 status.json = running
+        status = {
+            "task_id": task_id,
+            "username": username,
+            "status": "running",
+            "params": data,
+            "start_time": timestamp,
+            "api": "tabpfn",
+        }
+        with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
+            json.dump(status, f, indent=4, ensure_ascii=False)
+
+        # 準備呼叫 train_tabpfn.py 的指令
+        python_exe = sys.executable  # 確保使用同一個 venv
+        args = [
+            python_exe, "train_tabpfn.py",
+            file_path,
+            label_column,
+            split_strategy,
+            str(split_value),
+            model_name,
+            task_dir,
+        ]
+
+        # 有給才帶入
+        if device:
+            args += ["--device", str(device)]
+        if model_version:
+            args += ["--model_version", str(model_version)]
+        if n_ensembles not in (None, ""):
+            args += ["--n_ensembles", str(n_ensembles)]
+
+        # 開子行程訓練
+        p = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        process_pool[task_id] = {
+            "process": p,
+            "username": username,
+            "task_dir": task_dir
+        }
+
+        # 等訓練結束，拿 stdout / stderr
+        stdout, stderr = p.communicate()
+
+        # 若 task_id 不在 pool，代表中途被手動終止
+        if task_id not in process_pool:
+            return jsonify({
+                "status": "terminated",
+                "message": "Task was terminated by user.",
+                "task_id": task_id
+            })
+
+        # 1️⃣ 先檢查 returncode / stdout 是否為空
+        if p.returncode != 0 or not stdout.strip():
+            error_msg = (stderr or "").strip() or "TabPFN training failed with no output."
+            status["status"] = "error"
+            status["msg"] = error_msg
+            with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
+                json.dump(status, f, indent=4, ensure_ascii=False)
+
+            process_pool.pop(task_id, None)
+            return jsonify({
+                "status": "error",
+                "message": error_msg
+            })
+
+        # 2️⃣ stdout 有內容，再嘗試 parse JSON
+        try:
+            result = json.loads(stdout)
+        except json.JSONDecodeError as e:
+            error_msg = f"Failed to parse TabPFN output: {e}"
+            status["status"] = "error"
+            status["msg"] = error_msg
+            with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
+                json.dump(status, f, indent=4, ensure_ascii=False)
+
+            process_pool.pop(task_id, None)
+            return jsonify({
+                "status": "error",
+                "message": error_msg
+            })
+
+        # 3️⃣ 腳本自己回傳 status="error" 的情況
+        if result.get("status") == "error":
+            error_msg = result.get("message") or "TabPFN training error."
+            status["status"] = "error"
+            status["msg"] = error_msg
+            with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
+                json.dump(status, f, indent=4, ensure_ascii=False)
+
+            process_pool.pop(task_id, None)
+            return jsonify({
+                "status": "error",
+                "message": error_msg
+            })
+
+        # 一切正常：更新為 success
+        status["status"] = "success"
+        status["end_time"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+        with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
+            json.dump(status, f, indent=4, ensure_ascii=False)
+
+        process_pool.pop(task_id, None)
+        return jsonify(result)
+
+    except Exception as e:
+        # 這裡代表 route 自己掛掉（還沒進到子程式或其它意外）
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        })
+
+
 
 @app.route('/run-predict', methods=['POST'])
 def run_predict():
@@ -1040,7 +1185,7 @@ def run_predict():
     if not model_path or not mode:
         return jsonify({"status": "error", "message": "model_path and mode are necessary args"})
 
-    command = ['python', 'predict.py', model_path, mode, task_dir]
+    command = [sys.executable, 'predict.py', model_path, mode, task_dir]
     if mode == 'file':
         if not data_path or not output_name:
             return jsonify({"status": "error", "message": "data_path 和 output_name 是 file 模式下的必要參數"})
@@ -1147,7 +1292,7 @@ def run_evaluate():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'evaluate.py',
+            sys.executable, 'evaluate.py',
             model_path, data_path, output_name, label_column, pred_column,
             task_dir
         ]
@@ -1214,7 +1359,7 @@ def delete_tabular_rows():
 
     try:
         fetch_result = subprocess.run(
-            ['python', 'deleteTabRows.py', file_path, json.dumps(rows)],
+            [sys.executable, 'deleteTabRows.py', file_path, json.dumps(rows)],
             # capture_output=True,  # 捕獲標準輸出和標準錯誤
             stdout=subprocess.PIPE,     # 只捕獲標準輸出
             stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -1245,7 +1390,7 @@ def preview():
     file_path = data.get('file_path')
     try:
         fetch_result = subprocess.run(
-            ['python', 'checkPreviewTab.py', file_path],
+            [sys.executable, 'checkPreviewTab.py', file_path],
             # capture_output=True,  # 捕獲標準輸出和標準錯誤
             stdout=subprocess.PIPE,     # 只捕獲標準輸出
             stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -1282,7 +1427,7 @@ def handle_missing():
         })
     try:
         fetch_result = subprocess.run(
-            ['python', 'preprocess.py', file_path, json.dumps(rules)],
+            [sys.executable, 'preprocess.py', file_path, json.dumps(rules)],
             # capture_output=True,  # 捕獲標準輸出和標準錯誤
             stdout=subprocess.PIPE,     # 只捕獲標準輸出
             stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -1362,7 +1507,7 @@ def upload_samba_file():
 
     try:
         fetch_result = subprocess.run(
-            ['python', 'uploadSambaFile.py', username, password, remote_path, folder],
+            [sys.executable, 'uploadSambaFile.py', username, password, remote_path, folder],
             # capture_output=True,  # 捕獲標準輸出和標準錯誤
             stdout=subprocess.PIPE,     # 只捕獲標準輸出
             stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -1530,7 +1675,7 @@ def check_label_uniqueness():
     label_column = data.get('label_column')
     try:
         fetch_result = subprocess.run(
-            ['python', 'checkLabelUniqueness.py', file_path, label_column],
+            [sys.executable, 'checkLabelUniqueness.py', file_path, label_column],
             # capture_output=True,  # 捕獲標準輸出和標準錯誤
             stdout=subprocess.PIPE,     # 只捕獲標準輸出
             stderr=subprocess.DEVNULL,  # 忽略標準錯誤
@@ -1607,7 +1752,7 @@ def list_status():
 
     try:
         result = subprocess.run(
-            ['python', 'listStatus.py', user_dir],
+            [sys.executable, 'listStatus.py', user_dir],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True
@@ -1765,6 +1910,10 @@ def run_train_stacking():
         task_id = f"{timestamp}"
         task_dir = os.path.join("model", username, timestamp)   # model/<username>/<timestamp>/
         os.makedirs(task_dir, exist_ok=True)
+
+        # 修復：安全解析 JSON +++
+        status_path = os.path.join(task_dir, "status.json")
+
         # status.json
         status = {
             "task_id": task_id,
@@ -1778,7 +1927,7 @@ def run_train_stacking():
             json.dump(status, f, indent=4, ensure_ascii=False)
 
         args = [
-            'python', 'train_stacking.py',
+            sys.executable, 'train_stacking.py',  # Flask 執行 subprocess 時使用當前 Python 環境 ***
             data_name, json.dumps(base_models), label_column, meta_model,
             task_dir
         ]
@@ -1787,7 +1936,8 @@ def run_train_stacking():
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__))  # 新增cwd參數，設定工作目錄 +++
         )
 
         process_pool[task_id] = {
@@ -1809,7 +1959,38 @@ def run_train_stacking():
                 "message": "Task was terminated by user.",
                 "task_id": task_id
             })
-        result = json.loads(stdout)
+        
+
+        # 當 stdout 為空時會崩潰
+        # result = json.loads(stdout)  # 如果 stdout 是空的，這裡會拋出 JSONDecodeError
+        # 修復：安全解析 JSON +++
+        result = None
+        if stdout and stdout.strip():
+            try:
+                result = json.loads(stdout)
+            except json.JSONDecodeError as parse_err:
+                status['status'] = 'error'
+                status['msg'] = f"JSON parse error: {str(parse_err)}. stderr: {stderr[:300] if stderr else 'none'}"
+                with open(status_path, "w", encoding="utf-8") as f:
+                    json.dump(status, f, indent=4, ensure_ascii=False)
+                process_pool.pop(task_id, None)
+                return jsonify({
+                    "status": "error",
+                    "message": status['msg']
+                }), 500
+        else:
+            # stdout 為空
+            status['status'] = 'error'
+            status['msg'] = f"No output from train_stacking.py. stderr: {stderr[:500] if stderr else 'none'}"
+            with open(status_path, "w", encoding="utf-8") as f:
+                json.dump(status, f, indent=4, ensure_ascii=False)
+            process_pool.pop(task_id, None)
+            return jsonify({
+                "status": "error",
+                "message": status['msg']
+            }), 500
+
+
         if result.get("status") == "error" or p.returncode != 0:
             # 更新 status.json 為 error
             status['status'] = 'error'
@@ -1838,18 +2019,235 @@ def run_train_stacking():
             json.dump(stacking_config, f, indent=4, ensure_ascii=False)
         return jsonify(json.loads(stdout))
     
+    
     except Exception as e:
         # 更新 status.json 為 error
-        status['status'] = 'error'
-        status['msg'] = e or "Unknown error."
-        with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
-            json.dump(status, f, indent=4, ensure_ascii=False)
+        # 修復：Exception 轉字串
+        error_msg = str(e) or "Unknown error." # e 不是字串，Exception 物件不能直接 JSON 序列化
+        if task_dir and os.path.exists(task_dir):
+            status['status'] = 'error'
+            status['msg'] = error_msg
+            try:
+                with open(os.path.join(task_dir, "status.json"), "w", encoding="utf-8") as f:
+                    json.dump(status, f, indent=4, ensure_ascii=False)
+            except:
+                pass
+            
         # 任務完成後移除該 process 記錄
-        process_pool.pop(task_id, None)
+        if task_id:
+            process_pool.pop(task_id, None)
         return jsonify({
             "status": "error",
-            "message": str(e)
+            "message": error_msg
+        }), 500
+    
+
+
+@app.route('/run-synthetic', methods=['POST'])
+def run_synthetic():
+    """
+    執行合成資料生成（支援 CTGAN 和 TVAE）
+    
+    支援功能：
+    1. 生成器類型：CTGAN（Conditional GAN）、TVAE（Variational Autoencoder）
+    2. 分群訓練（Grouped Training）- 支援多類別
+    3. TGANT 篩選（TGANT Filtering）
+    4. 自動參數調整（根據類別樣本數）
+    5. 完整品質評估（Fidelity/Privacy/Utility）
+    
+    TVAE 論文參數：epochs=5000, compress_dims=(64,64), decompress_dims=(64,64), embedding_dim=64
+    """
+    data = request.json
+    
+    # 基本參數
+    file_path = data.get('file_path')
+    generator_type = data.get('generator_type', 'ctgan')  # 'ctgan', 'tvae' 或 'tabddpm'
+    num_samples = data.get('num_samples', '1x')
+    username = data.get('username')
+    
+    # 標籤欄位（單標籤）
+    label_column = data.get('label_column', 'none')
+    if not label_column:
+        label_column = 'none'
+    
+    # 生成器參數（CTGAN 和 TVAE 共用）
+    # SDV 官方預設值：
+    # - epochs: 300 (自動參數會根據樣本數倍增: n<100 CTGAN×10/TVAE×15, n<500 CTGAN×5/TVAE×10, ...)
+    # - batch_size: 500 (必須是 10 的倍數)
+    # - generator_dim: 256 (TVAE 用作 compress_dims，自動調整: n<500 用 128, n<100 用 64)
+    # - discriminator_dim: 256 (TVAE 用作 decompress_dims)
+    # - embedding_dim: 128
+    epochs = str(data.get('epochs', '300'))  # SDV 預設 300，自動參數會根據樣本數倍增
+    batch_size = str(data.get('batch_size', '500'))
+    discriminator_steps = str(data.get('discriminator_steps', '1'))  # TVAE 不使用
+    generator_dim = str(data.get('generator_dim', '256'))      # TVAE: compress_dims
+    discriminator_dim = str(data.get('discriminator_dim', '256'))  # TVAE: decompress_dims
+    embedding_dim = str(data.get('embedding_dim', '128'))
+    
+    # 進階參數
+    train_mode = data.get('train_mode', 'grouped')  # 'mixed' 或 'grouped'
+    generator_lr = str(data.get('generator_lr', '0.0002'))
+    discriminator_lr = str(data.get('discriminator_lr', '0.0002'))
+    enable_tgant = 'true' if data.get('enable_tgant', False) else 'false'
+    generate_multiplier = str(data.get('generate_multiplier', '1'))
+    use_auto_params = 'true' if data.get('use_auto_params', True) else 'false'
+    
+    # TGANT 進階參數（新增）
+    tgant_threshold = str(data.get('tgant_threshold', '0.95'))
+    tgant_max_gen = str(data.get('tgant_max_gen', '10'))
+    tgant_metric = data.get('tgant_metric', 'min')  # 'min' 或 'macro'
+    
+    # 欄位約束（Column Constraints）
+    # 格式: {"col_name": {"type": "range|min|max|fixed|options", ...}, ...}
+    column_constraints_raw = data.get('column_constraints', None)
+    if column_constraints_raw and isinstance(column_constraints_raw, dict):
+        column_constraints_json = json.dumps(column_constraints_raw, ensure_ascii=False)
+    else:
+        column_constraints_json = 'none'
+    
+    # 建立任務目錄
+    task_id = datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + str(uuid.uuid4())[:8]
+    task_dir = os.path.join('model', username, 'synthetic', task_id)
+    os.makedirs(task_dir, exist_ok=True)
+
+    # 寫入 status.json = running（對齊 run-train-tabpfn 等既有訓練路由）
+    status = {
+        "task_id": task_id,
+        "username": username,
+        "status": "running",
+        "params": data,
+        "start_time": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "api": "synthetic",
+    }
+    status_path = os.path.join(task_dir, "status.json")
+    with open(status_path, "w", encoding="utf-8") as f:
+        json.dump(status, f, indent=4, ensure_ascii=False)
+
+    def _update_status(state, msg=None):
+        # 更新 status.json（success / error）
+        status["status"] = state
+        if msg:
+            status["msg"] = str(msg)[:1000]
+        status["end_time"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump(status, f, indent=4, ensure_ascii=False)
+    
+    # 執行訓練腳本
+    cmd = [
+        sys.executable, 'run_synthetic.py',
+        file_path,              # 1. 資料檔案路徑
+        label_column,           # 2. 標籤欄位
+        generator_type,         # 3. 生成器類型 (ctgan/tvae/tabddpm)
+        num_samples,            # 4. 生成數量 (1x/2x/數字)
+        epochs,                 # 5. 訓練輪數 (CTGAN:300, TVAE:5000, TabDDPM:n_iter)
+        batch_size,             # 6. 批次大小
+        discriminator_steps,    # 7. 判別器步數 (TVAE/TabDDPM 不使用)
+        generator_dim,          # 8. CTGAN:gen_dim / TVAE:compress_dims / TabDDPM:num_timesteps
+        discriminator_dim,      # 9. CTGAN:disc_dim / TVAE:decompress_dims (TabDDPM 不使用)
+        embedding_dim,          # 10. 嵌入維度 (TabDDPM 不使用)
+        task_dir,               # 11. 輸出目錄
+        train_mode,             # 12. 訓練模式 (mixed/grouped)
+        generator_lr,           # 13. 生成器學習率 (TVAE 不使用)
+        discriminator_lr,       # 14. 判別器學習率 (TVAE 不使用)
+        use_auto_params,        # 15. 是否使用自動參數
+        enable_tgant,           # 16. 是否啟用 TGANT 篩選
+        generate_multiplier,    # 17. 生成倍數
+        tgant_threshold,        # 18. TGANT 收斂門檻 (0.5~0.99)
+        tgant_max_gen,          # 19. TGANT 最大迭代代數 (3~50)
+        tgant_metric,            # 20. TGANT 評估指標 (min/macro)
+        column_constraints_json  # 21. 欄位約束 JSON (可選)
+    ]
+    
+    # 以 Popen 啟動並註冊至 process_pool，供 /terminate-task 終止
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process_pool[task_id] = {
+        "process": p,
+        "username": username,
+        "task_dir": task_dir
+    }
+    stdout_text, stderr_text = p.communicate()
+
+    # 若 task_id 已不在 pool，代表已被 /terminate-task 終止
+    # （terminate-task 已將 status.json 更新為 terminated，這裡不再覆寫）
+    if task_id not in process_pool:
+        return jsonify({
+            "status": "terminated",
+            "message": "Task was terminated by user.",
+            "task_id": task_id
         })
+    process_pool.pop(task_id, None)
+
+    # 包裝為 CompletedProcess，使後續既有邏輯完全不變
+    result = subprocess.CompletedProcess(cmd, p.returncode, stdout=stdout_text, stderr=stderr_text)
+    
+    # 錯誤處理
+    if result.returncode == 0 and result.stdout.strip():
+        try:
+            # 過濾掉非 JSON 行（pyKeOps, synthcity 等的輸出）
+            stdout_lines = result.stdout.strip().split('\n')
+            json_line = None
+            
+            # 從後往前找，最後一行應該是 JSON
+            for line in reversed(stdout_lines):
+                line = line.strip()
+                if line.startswith('{') and line.endswith('}'):
+                    json_line = line
+                    break
+            
+            if json_line:
+                output = json.loads(json_line)
+                output['task_id'] = task_id
+                _update_status('error' if output.get('status') == 'error' else 'success', output.get('message'))
+                return jsonify(output)
+            else:
+                # 嘗試直接解析整個 stdout
+                output = json.loads(result.stdout)
+                output['task_id'] = task_id
+                _update_status('error' if output.get('status') == 'error' else 'success', output.get('message'))
+                return jsonify(output)
+                
+        except json.JSONDecodeError as e:
+            _update_status('error', f'JSON 解析錯誤: {str(e)}')
+            return jsonify({
+                'status': 'error',
+                'message': f'JSON 解析錯誤: {str(e)}',
+                'stdout': result.stdout[:2000] if result.stdout else 'empty',
+                'stderr': result.stderr[:2000] if result.stderr else 'empty'
+            })
+    else:
+        # 詳細錯誤訊息
+        error_msg = result.stderr if result.stderr else 'Script execution failed with no output'
+        _update_status('error', error_msg)
+        return jsonify({
+            'status': 'error',
+            'message': error_msg,
+            'stdout': result.stdout[:1000] if result.stdout else 'empty',
+            'stderr': result.stderr[:1000] if result.stderr else 'empty',
+            'returncode': result.returncode,
+            'cmd': ' '.join(cmd[:5]) + '...'  # 顯示前幾個參數
+        })
+
+
+@app.route('/download-synthetic/<username>/<task_id>/<filename>')
+def download_synthetic(username, task_id, filename):
+    """下載合成資料檔案"""
+    file_path = os.path.join('model', username, 'synthetic', task_id, filename)
+    
+    # 調試：列出目錄中的檔案
+    task_dir = os.path.join('model', username, 'synthetic', task_id)
+    if os.path.exists(task_dir):
+        files_in_dir = os.listdir(task_dir)
+    else:
+        files_in_dir = []
+    
+    if os.path.exists(file_path):
+        return send_file(file_path, as_attachment=True)
+    else:
+        return jsonify({
+            'status': 'error',
+            'message': f'檔案不存在: {file_path}',
+            'available_files': files_in_dir  # 顯示實際有哪些檔案
+        }), 404
 
 if __name__ == '__main__':
     app.run(debug=True)

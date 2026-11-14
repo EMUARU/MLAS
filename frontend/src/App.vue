@@ -102,6 +102,12 @@ export default {
           title: this.$t('lblStacking'),
           icon: 'fa fa-cubes'
         },
+        // ========== 新增：合成資料生成 ==========
+        {
+          href: '/synthetic',
+          title: this.$t('lblSynthetic'),
+          icon: 'fa fa-table'
+        },
         {
           title: this.$t('lblPredict'),
           icon: 'fa fa-line-chart',

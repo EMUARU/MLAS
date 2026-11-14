@@ -49,14 +49,26 @@ except Exception:
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 def train_catboost(x_train, y_train, x_val, y_val, model_name, iterations, learning_rate, depth, task_dir):
+    # 自動偵測二元 / 多分類
+    num_class = int(len(np.unique(y_train)))
+    if num_class <= 2:
+        loss_function = "Logloss"
+        eval_metric = "Logloss"
+        custom_metric = ["Accuracy"]
+    else:
+        loss_function = "MultiClass"
+        eval_metric = "MultiClass"
+        custom_metric = ["Accuracy"]
+
     model = CatBoostClassifier(
         iterations=iterations,
         learning_rate=learning_rate,
         depth=depth,
-        eval_metric="Logloss",
+        loss_function=loss_function,
+        eval_metric=eval_metric,
         verbose=0,
         use_best_model=True,
-        custom_metric=["Accuracy"],
+        custom_metric=custom_metric,
     )
     model.fit(
         x_train, y_train,
@@ -69,27 +81,40 @@ def train_catboost(x_train, y_train, x_val, y_val, model_name, iterations, learn
         joblib.dump(model, f"{task_dir}/{model_name}.pkl")
     return model, evals_result
 
-def evaluate_model(y_test, y_pred, model, x_test):
-    y_test = y_test.astype(float)
-    y_pred = y_pred.astype(float)
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-    result = {
-        "status": "success",
-        "confusion_matrix": {
-            "true_negative": tn,
-            "false_positive": fp,
-            "false_negative": fn,
-            "true_positive": tp,
-        },
-        "metrics": {
-            "accuracy": float(accuracy_score(y_test, y_pred) * 100),
-            "recall": float(recall_score(y_test, y_pred) * 100),
-            "precision": float(precision_score(y_test, y_pred) * 100),
-            "f1_score": float(f1_score(y_test, y_pred) * 100),
-        }
-    }
+def evaluate_model(y_test, y_pred, model, x_test, focus_class=1):
+    y_test = np.asarray(y_test).astype(int)
+    x_test = np.asarray(x_test)
 
     y_pred_proba = model.predict_proba(x_test)
+    num_class = int(y_pred_proba.shape[1])
+
+    if num_class == 2:
+        y_true_bin = y_test
+        y_score = y_pred_proba[:, 1]
+    else:
+        focus_class = int(focus_class)
+        y_true_bin = (y_test == focus_class).astype(int)
+        y_score = y_pred_proba[:, focus_class]
+
+    y_pred_bin = (y_score >= 0.5).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true_bin, y_pred_bin, labels=[0, 1]).ravel()
+    result = {
+        "status": "success",
+        "num_class": int(num_class),
+        "focus_class": int(focus_class) if num_class > 2 else 1,
+        "confusion_matrix": {
+            "true_negative": int(tn),
+            "false_positive": int(fp),
+            "false_negative": int(fn),
+            "true_positive": int(tp),
+        },
+        "metrics": {
+            "accuracy": float(accuracy_score(y_true_bin, y_pred_bin) * 100),
+            "recall": float(recall_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
+            "precision": float(precision_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
+            "f1_score": float(f1_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
+        }
+    }
     thresh_list = []
     accuracy_score_list = []
     precision_score_list = []
@@ -99,20 +124,37 @@ def evaluate_model(y_test, y_pred, model, x_test):
     npv_score_list = []
     confusion_matrix_list = []
 
-    for th in range(1, 101):
-        th *= 0.01
-        y_pred = [0 if x[0] >= th else 1 for x in y_pred_proba]
-        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-        specificity = tn / (tn+fp) if (tn + fp) > 0 else 0
-        npv = tn / (fn+tn) if (fn + tn) > 0 else 0
-        thresh_list.append(th)
-        accuracy_score_list.append(accuracy_score(y_test, y_pred) * 100)
-        precision_score_list.append(precision_score(y_test, y_pred, zero_division=0) * 100)
-        recall_score_list.append(recall_score(y_test, y_pred, zero_division=0) * 100)
-        f1_score_list.append(f1_score(y_test, y_pred, zero_division=0) * 100)
-        specificity_score_list.append(specificity * 100)
-        npv_score_list.append(npv * 100)
-        confusion_matrix_list.append([tn, fp, fn, tp])
+    if num_class == 2:
+        score_for_threshold = y_pred_proba[:, 0]
+        for th_int in range(1, 101):
+            th = th_int * 0.01
+            y_pred_th = np.array([0 if (p0 >= th) else 1 for p0 in score_for_threshold], dtype=int)
+            tn2, fp2, fn2, tp2 = confusion_matrix(y_test, y_pred_th, labels=[0, 1]).ravel()
+            specificity = tn2 / (tn2 + fp2) if (tn2 + fp2) > 0 else 0
+            npv = tn2 / (fn2 + tn2) if (fn2 + tn2) > 0 else 0
+            thresh_list.append(th)
+            accuracy_score_list.append(accuracy_score(y_test, y_pred_th) * 100)
+            precision_score_list.append(precision_score(y_test, y_pred_th, zero_division=0) * 100)
+            recall_score_list.append(recall_score(y_test, y_pred_th, zero_division=0) * 100)
+            f1_score_list.append(f1_score(y_test, y_pred_th, zero_division=0) * 100)
+            specificity_score_list.append(specificity * 100)
+            npv_score_list.append(npv * 100)
+            confusion_matrix_list.append([tn2, fp2, fn2, tp2])
+    else:
+        for th_int in range(1, 101):
+            th = th_int * 0.01
+            y_pred_th = (y_score >= th).astype(int)
+            tn2, fp2, fn2, tp2 = confusion_matrix(y_true_bin, y_pred_th, labels=[0, 1]).ravel()
+            specificity = tn2 / (tn2 + fp2) if (tn2 + fp2) > 0 else 0
+            npv = tn2 / (fn2 + tn2) if (fn2 + tn2) > 0 else 0
+            thresh_list.append(th)
+            accuracy_score_list.append(accuracy_score(y_true_bin, y_pred_th) * 100)
+            precision_score_list.append(precision_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            recall_score_list.append(recall_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            f1_score_list.append(f1_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            specificity_score_list.append(specificity * 100)
+            npv_score_list.append(npv * 100)
+            confusion_matrix_list.append([tn2, fp2, fn2, tp2])
 
     recall_standard_list = [80, 85, 90, 95]
     for recall_standard in recall_standard_list:
@@ -156,8 +198,7 @@ def evaluate_model(y_test, y_pred, model, x_test):
             }
 
     # ROC plot
-    y_pred_roc = [x[1] for x in y_pred_proba]
-    fpr, tpr, _ = roc_curve(y_test, y_pred_roc)
+    fpr, tpr, _ = roc_curve(y_true_bin, y_score)
     plt.plot(fpr, tpr, color='m', label="ROC curve")
     plt.plot([0, 1], [0, 1], color='0', linestyle="-.")
     plt.xlabel("False Positive Rate")
@@ -172,7 +213,7 @@ def evaluate_model(y_test, y_pred, model, x_test):
 
     return result
 
-def explain_with_shap(model, x_test, feature_names):
+def explain_with_shap(model, x_test, feature_names, focus_class=1):
     result = {}
     try:
         explainer = shap.Explainer(model)
@@ -196,7 +237,7 @@ def explain_with_shap(model, x_test, feature_names):
         result["shap_error"] = str(e)
     return result
 
-def explain_with_lime(model, x_test, y_test, feature_names):
+def explain_with_lime(model, x_test, y_test, feature_names, focus_class=1):
     result = {}
     try:
         lime_explainer = LimeTabularExplainer(
@@ -204,15 +245,16 @@ def explain_with_lime(model, x_test, y_test, feature_names):
             mode="classification",
             training_labels=y_test,
             feature_names=feature_names,
-            class_names=["class_0", "class_1"],
+            class_names=[f"class_{i}" for i in range(len(model.predict_proba(x_test[:1])[0]))],
             discretize_continuous=True,
         )
 
         lime_result = lime_explainer.explain_instance(
-            x_test[0], model.predict_proba, num_features=10
+            x_test[0], model.predict_proba, num_features=10,
+            labels=[int(focus_class)]
         )
 
-        fig = lime_result.as_pyplot_figure()
+        fig = lime_result.as_pyplot_figure(label=int(focus_class))
         fig.set_size_inches(10, 6)
         fig.tight_layout()
         buf = io.BytesIO()
@@ -221,14 +263,22 @@ def explain_with_lime(model, x_test, y_test, feature_names):
         result["lime_plot"] = base64.b64encode(buf.getvalue()).decode('utf-8')
         buf.close()
         plt.close(fig)
-        result["lime_example_0"] = lime_result.as_list()
+        result["lime_example_0"] = lime_result.as_list(label=int(focus_class))
     except Exception as e:
         result["lime_error"] = str(e)
     return result
 
 def plot_loss(evals_result):
-    logloss_train = evals_result['learn']['Logloss']
-    logloss_val = evals_result['validation']['Logloss']
+    # 自動判斷 Logloss (binary) 或 MultiClass (multi)
+    if 'Logloss' in evals_result['learn']:
+        loss_key = 'Logloss'
+    elif 'MultiClass' in evals_result['learn']:
+        loss_key = 'MultiClass'
+    else:
+        loss_key = list(evals_result['learn'].keys())[0]
+
+    logloss_train = evals_result['learn'][loss_key]
+    logloss_val = evals_result['validation'][loss_key]
     epochs = range(1, len(logloss_train) + 1)
 
     plt.figure()
@@ -272,7 +322,7 @@ def plot_accuracy(evals_result):
 
     return image_base64
 
-def kfold_evaluation(x, y, cv_folds, model_name, iterations, learning_rate, depth, feature_names, task_dir):
+def kfold_evaluation(x, y, cv_folds, model_name, iterations, learning_rate, depth, feature_names, task_dir, focus_class=1):
     skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=30)
     folds_result = []
     total_tn = total_fp = total_fn = total_tp = 0
@@ -282,26 +332,28 @@ def kfold_evaluation(x, y, cv_folds, model_name, iterations, learning_rate, dept
         x_train, x_val = x[train_idx], x[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
         model, evals_result = train_catboost(x_train, y_train, x_val, y_val, f"{model_name}_fold_{fold_index}", iterations, learning_rate, depth, task_dir)
-        y_pred_proba = model.predict_proba(x_val)[:, 1]
+
+        # Multi-class: convert to binary view
+        _num_class = len(model.classes_) if hasattr(model, "classes_") else int(model.predict_proba(x_val[:1]).shape[1])
+        if _num_class > 2:
+            y_val_bin = (y_val == int(focus_class)).astype(int)
+        else:
+            y_val_bin = y_val
+
+        y_pred_proba = model.predict_proba(x_val)[:, int(focus_class)]
         y_pred = (y_pred_proba >= 0.5).astype(int)
-        tn, fp, fn, tp = confusion_matrix(y_val, y_pred).ravel()
+        tn, fp, fn, tp = confusion_matrix(y_val_bin, y_pred, labels=[0, 1]).ravel()
 
         total_tn += tn
         total_fp += fp
         total_fn += fn
         total_tp += tp
 
-        accuracy = accuracy_score(y_val, y_pred)
-        recall = recall_score(y_val, y_pred)
-        precision = precision_score(y_val, y_pred)
-        f1 = f1_score(y_val, y_pred)
-        auc_score = auc(*roc_curve(y_val, y_pred_proba)[:2])
-
-        accuracy = (tp + tn) / (tp + tn + fp + fn)
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        fpr, tpr, _ = roc_curve(y_val, y_pred_proba)
+        accuracy = accuracy_score(y_val_bin, y_pred)
+        recall = recall_score(y_val_bin, y_pred, zero_division=0)
+        precision = precision_score(y_val_bin, y_pred, zero_division=0)
+        f1 = f1_score(y_val_bin, y_pred, zero_division=0)
+        fpr, tpr, _ = roc_curve(y_val_bin, y_pred_proba)
         auc_score = auc(fpr, tpr)
 
         all_metrics["accuracy"].append(accuracy)
@@ -325,8 +377,8 @@ def kfold_evaluation(x, y, cv_folds, model_name, iterations, learning_rate, dept
 
         loss_base64 = plot_loss(evals_result)
         acc_base64 = plot_accuracy(evals_result)
-        shap_result = explain_with_shap(model, x_val, feature_names)
-        lime_result = explain_with_lime(model, x_val, y_val, feature_names)
+        shap_result = explain_with_shap(model, x_val, feature_names, focus_class=focus_class)
+        lime_result = explain_with_lime(model, x_val, y_val, feature_names, focus_class=focus_class)
 
         folds_result.append({
             "fold": fold_index,
@@ -378,13 +430,13 @@ def main(file_path, label_column, split_strategy, split_value, model_name, itera
         x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=float(split_value), stratify=y, random_state=30)
         model, evals_result = train_catboost(x_train, y_train, x_test, y_test, model_name, iterations, learning_rate, depth, task_dir)
         y_pred = model.predict(x_test)
-        result = evaluate_model(y_test, y_pred, model, x_test)
+        result = evaluate_model(y_test, y_pred, model, x_test, focus_class=1)
         result["loss_plot"] = plot_loss(evals_result)
         result["accuracy_plot"] = plot_accuracy(evals_result)
-        result.update(explain_with_shap(model, x_test, feature_names))
-        result.update(explain_with_lime(model, x_test, y_test, feature_names))
+        result.update(explain_with_shap(model, x_test, feature_names, focus_class=1))
+        result.update(explain_with_lime(model, x_test, y_test, feature_names, focus_class=1))
     elif split_strategy == "k_fold":
-        result = kfold_evaluation(x, y, int(split_value), model_name, iterations, learning_rate, depth, feature_names, task_dir)
+        result = kfold_evaluation(x, y, int(split_value), model_name, iterations, learning_rate, depth, feature_names, task_dir, focus_class=1)
     else:
         print(json.dumps({"status": "error", "message": "Unsupported split strategy"}))
         return

@@ -58,6 +58,13 @@ const routes = [
     component: () => import('../views/ReleaseView.vue'),
     meta: { requiresAuth: true }
   },
+  // ========== 新增：合成資料生成 ==========
+  {
+    path: '/synthetic',
+    name: 'synthetic',
+    component: () => import('../views/SyntheticView.vue'),
+    meta: { requiresAuth: true }
+  },
 ]
 
 const router = createRouter({

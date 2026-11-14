@@ -1,5 +1,5 @@
 # usage:
-# python predict.py model.json file --data_path input.xlsx --output_name result
+# python evaluate.py model.json data.csv eval_result label pred <task_dir>
 # read_csv 和 read_excel 會自行轉換數值型 (int 或 float)和布林型 (bool)
 
 # import subprocess
@@ -53,18 +53,84 @@ import shutil
 from sklearn.ensemble import AdaBoostClassifier
 from sklearn.svm import SVC
 
+
+def _fix_xgb_n_classes(model):
+    """XGBoost 2.x workaround：load_model 之後有時不會還原 n_classes_"""
+    if not hasattr(model, "n_classes_"):
+        try:
+            booster = model.get_booster()
+            config = json.loads(booster.save_config())
+            num_class = int(config.get("learner", {}).get("learner_model_param", {}).get("num_class", 2))
+            # XGBoost binary 也可能回傳 num_class=0，代表 2 類
+            model.n_classes_ = max(num_class, 2)
+        except Exception:
+            model.n_classes_ = 2
+    return model
+
 def load_model(model_path):
     if model_path.lower().endswith(".json"):  # .json 結尾
         model = XGBClassifier()
         model.load_model(model_path)
-        # print(f"XGBoost 模型已從 {model_path} 載入")
+        model = _fix_xgb_n_classes(model)
     elif model_path.lower().endswith(".pkl"):
         model = joblib.load(model_path)
-        # print(f"模型已從 {model_path} 載入")
     elif model_path.lower().endswith(".zip"):
-        model = TabNetClassifier()
-        model.load_model(model_path)
-        # print(f"模型已從 {model_path} 載入")
+        # 修改：區分 TabNet zip 和訓練結果 zip
+        try:
+            with zipfile.ZipFile(model_path, 'r') as zip_ref:
+                file_list = zip_ref.namelist()
+                
+                # 檢查是否為 stacking zip
+                if "stacking_config.json" in file_list:
+                    # stacking 模型由 predict_stacking 處理，這裡不應該進來
+                    raise ValueError("Stacking model should be handled by predict_stacking()")
+                
+                # ✅ 檢查是否為訓練結果 zip（包含 .json 模型檔案）
+                excluded_jsons = {'metrics.json', 'status.json', 'model_params.json', 'stacking_config.json'}
+                json_model_files = [f for f in file_list if f.endswith('.json') and f not in excluded_jsons]
+                if json_model_files:
+                    temp_dir = tempfile.mkdtemp()
+                    try:
+                        zip_ref.extractall(temp_dir)
+                        json_path = os.path.join(temp_dir, json_model_files[0])
+                        model = XGBClassifier()
+                        model.load_model(json_path)
+                        model = _fix_xgb_n_classes(model)
+                        return model
+                    finally:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+
+                # 檢查是否為訓練結果 zip（包含 .pkl 檔案）
+                pkl_files = [f for f in file_list if f.endswith('.pkl')]
+                if pkl_files:
+                    # 解壓到暫存目錄並載入 pkl 模型
+                    temp_dir = tempfile.mkdtemp()
+                    try:
+                        zip_ref.extractall(temp_dir)
+                        pkl_path = os.path.join(temp_dir, pkl_files[0])
+                        model = joblib.load(pkl_path)
+                    finally:
+                        # 注意：這裡不能刪除 temp_dir，因為某些模型可能需要它
+                        # 實際上 joblib.load 後就不需要了，可以刪除
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    return model
+                
+                # 檢查是否為 TabNet 模型 zip（包含 model_params.json 等）
+                if "model_params.json" in file_list or any('network' in f for f in file_list):
+                    model = TabNetClassifier()
+                    model.load_model(model_path)
+                    return model
+                
+                # 都不是，嘗試當作 TabNet 載入
+                model = TabNetClassifier()
+                model.load_model(model_path)
+                
+        except zipfile.BadZipFile:
+            print(json.dumps({
+                "status": "error",
+                "message": f"Invalid zip file: {model_path}",
+            }))
+            sys.exit(1)
     else:
         print(json.dumps({
             "status": "error",
@@ -72,6 +138,7 @@ def load_model(model_path):
         }))
         sys.exit(1)
     return model
+
 
 def load_data(data_path):
     if data_path.endswith(".csv"):
@@ -87,15 +154,22 @@ def load_data(data_path):
     return data
 
 def predict_labels(model, model_path, data, label_column, pred_column):
+    # 先把 label 欄位拿掉，避免特徵數多一個
     x_test = data.drop(columns=[label_column], errors='ignore').copy()
     y_test = data[label_column].copy()
-    if model_path.lower().endswith(".zip"): # tabnet 只吃 numpy array，不吃 object
+
+    class_name = model.__class__.__name__.lower()
+
+    # TabNet (.zip) 或 TabPFN 都用 numpy.float32，其它照舊
+    if model_path.lower().endswith(".zip") or class_name.startswith("tabpfn"):
         x_test = x_test.to_numpy(dtype=np.float32)
     else:
         x_test = x_test.values
+
     y_pred = model.predict(x_test)
     data[pred_column] = y_pred
     return x_test, y_test, y_pred, data
+
 
 def save_predictions(data, data_path, output_name, task_dir):
     os.makedirs(task_dir, exist_ok=True)
@@ -107,28 +181,47 @@ def save_predictions(data, data_path, output_name, task_dir):
         output_path = os.path.join(task_dir, f"{output_name}.xlsx")
         data.to_excel(output_path, index=False)
 
-def evaluate_model(y_test, y_pred, model, x_test):
-    y_test = y_test.astype(float)
-    y_pred = y_pred.astype(float)
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+def evaluate_model(y_test, y_pred, model, x_test, focus_class=1):
+    # - 二元分類：照原本邏輯（class 1 為正類）
+    # - 多元分類：轉成 focus_class vs rest 的二元視角
+    y_test = np.asarray(y_test).astype(int)
+    x_test = np.asarray(x_test)
+
+    y_pred_proba = model.predict_proba(x_test)
+    num_class = int(y_pred_proba.shape[1])
+
+    # ===== 1) 產生「二元視角」y_true_bin / y_score =====
+    if num_class == 2:
+        y_true_bin = y_test
+        y_score = y_pred_proba[:, 1]
+    else:
+        focus_class = int(focus_class)
+        y_true_bin = (y_test == focus_class).astype(int)
+        y_score = y_pred_proba[:, focus_class]
+
+    # ===== 2) 0.5 預設門檻的二元預測 =====
+    y_pred_bin = (y_score >= 0.5).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true_bin, y_pred_bin).ravel()
+
     result = {
         "status": "success",
+        "num_class": int(num_class),
+        "focus_class": int(focus_class) if num_class > 2 else 1,
         "confusion_matrix": {
-            "true_negative": tn,
-            "false_positive": fp,
-            "false_negative": fn,
-            "true_positive": tp,
+            "true_negative": int(tn),
+            "false_positive": int(fp),
+            "false_negative": int(fn),
+            "true_positive": int(tp),
         },
         "metrics": {
-            "accuracy": float(accuracy_score(y_test, y_pred) * 100),
-            "recall": float(recall_score(y_test, y_pred) * 100),
-            "precision": float(precision_score(y_test, y_pred) * 100),
-            "f1_score": float(f1_score(y_test, y_pred) * 100),
+            "accuracy": float(accuracy_score(y_true_bin, y_pred_bin) * 100),
+            "recall": float(recall_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
+            "precision": float(precision_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
+            "f1_score": float(f1_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
         }
     }
 
-    # recall 分析
-    y_pred_proba = model.predict_proba(x_test)
+    # ===== 3) recall 門檻掃描 =====
     thresh_list = []
     accuracy_score_list = []
     precision_score_list = []
@@ -137,20 +230,44 @@ def evaluate_model(y_test, y_pred, model, x_test):
     specificity_score_list = []
     npv_score_list = []
     confusion_matrix_list = []
-    for th in range(1,101):
-        th *= 0.01
-        y_pred = [0 if (x[0] >= th) else 1 for x in y_pred_proba]
-        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-        specificity = tn / (tn+fp) if (tn + fp) > 0 else 0
-        npv = tn / (fn+tn) if (fn + tn) > 0 else 0
-        thresh_list.append(th)
-        accuracy_score_list.append(accuracy_score(y_test, y_pred) * 100)
-        precision_score_list.append(precision_score(y_test, y_pred, zero_division=0) * 100)
-        recall_score_list.append(recall_score(y_test, y_pred, zero_division=0) * 100)
-        f1_score_list.append(f1_score(y_test, y_pred, zero_division=0) * 100)
-        specificity_score_list.append(specificity * 100)
-        npv_score_list.append(npv * 100)
-        confusion_matrix_list.append([tn, fp, fn, tp])
+
+    if num_class == 2:
+        # 二元：用 class 0 機率（與舊版 x[0] >= th 行為一致）
+        score_for_threshold = y_pred_proba[:, 0]
+        for th_int in range(1, 101):
+            th = th_int * 0.01
+            y_pred_th = np.array([0 if (p0 >= th) else 1 for p0 in score_for_threshold], dtype=int)
+
+            tn2, fp2, fn2, tp2 = confusion_matrix(y_test, y_pred_th).ravel()
+            specificity = tn2 / (tn2 + fp2) if (tn2 + fp2) > 0 else 0
+            npv = tn2 / (fn2 + tn2) if (fn2 + tn2) > 0 else 0
+
+            thresh_list.append(th)
+            accuracy_score_list.append(accuracy_score(y_test, y_pred_th) * 100)
+            precision_score_list.append(precision_score(y_test, y_pred_th, zero_division=0) * 100)
+            recall_score_list.append(recall_score(y_test, y_pred_th, zero_division=0) * 100)
+            f1_score_list.append(f1_score(y_test, y_pred_th, zero_division=0) * 100)
+            specificity_score_list.append(specificity * 100)
+            npv_score_list.append(npv * 100)
+            confusion_matrix_list.append([tn2, fp2, fn2, tp2])
+    else:
+        # 多元：focus_class vs rest
+        for th_int in range(1, 101):
+            th = th_int * 0.01
+            y_pred_th = (y_score >= th).astype(int)
+
+            tn2, fp2, fn2, tp2 = confusion_matrix(y_true_bin, y_pred_th).ravel()
+            specificity = tn2 / (tn2 + fp2) if (tn2 + fp2) > 0 else 0
+            npv = tn2 / (fn2 + tn2) if (fn2 + tn2) > 0 else 0
+
+            thresh_list.append(th)
+            accuracy_score_list.append(accuracy_score(y_true_bin, y_pred_th) * 100)
+            precision_score_list.append(precision_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            recall_score_list.append(recall_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            f1_score_list.append(f1_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            specificity_score_list.append(specificity * 100)
+            npv_score_list.append(npv * 100)
+            confusion_matrix_list.append([tn2, fp2, fn2, tp2])
 
     recall_standard_list = [80, 85, 90, 95]
     for recall_standard in recall_standard_list:
@@ -213,12 +330,9 @@ def evaluate_model(y_test, y_pred, model, x_test):
         }
 
     # plot
-    y_pred_roc = [x[1] for x in y_pred_proba]
-    guess_tp = np.arange(0, 1, 0.001)
-    guess_fp = np.arange(0, 1, 0.001)
-    fpr, tpr, thresholds = metrics.roc_curve(y_test, y_pred_roc, pos_label=1)
-    plt.plot(fpr,tpr, color='m', label = "ROC curve")
-    plt.plot(guess_fp,guess_tp, color='0', linestyle="-.")
+    fpr, tpr, thresholds = metrics.roc_curve(y_true_bin, y_score, pos_label=1)
+    plt.plot(fpr, tpr, color='m', label="ROC curve")
+    plt.plot(np.arange(0, 1, 0.001), np.arange(0, 1, 0.001), color='0', linestyle="-.")
     plt.ylabel("True Positive Rate")
     plt.xlabel("False Positive Rate")
     plt.legend()
@@ -228,21 +342,25 @@ def evaluate_model(y_test, y_pred, model, x_test):
     buf.seek(0)
     image_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     buf.close()
+    plt.close()
 
     result['roc'] = image_base64
     return result
 
-def explain_with_shap(model, x_test, feature_names):
+def explain_with_shap(model, x_test, feature_names, focus_class=1):
     result = {}
     try:
         x_test = np.array(x_test, dtype=np.float32)
-        is_tabnet = (
+        class_name = model.__class__.__name__.lower()
+        is_tabnet_or_tabpfn = (
             hasattr(model, "predict_proba") and
-            not hasattr(model, "predict")  # TabNet 沒有原生 predict，只有 predict_proba
-        ) or model.__class__.__name__.lower().startswith("tabnet")
+            not hasattr(model, "predict")  # TabNet 沒有原生 predict，只有 predict_proba，TabNet / TabPFN 共用：用 KernelExplainer + predict_proba
+        )\
+        or class_name.startswith("tabnet")\
+        or class_name.startswith("tabpfn")  # 新增：TabPFN
 
-        if is_tabnet:
-            # 專門為 TabNet 使用 KernelExplainer
+        if is_tabnet_or_tabpfn:
+            # 專門為 TabNet / TabPFN 使用 KernelExplainer
             background = x_test[:20]
             explain_data = x_test[:5]
 
@@ -252,9 +370,9 @@ def explain_with_shap(model, x_test, feature_names):
 
             shap_values = np.array(shap_values)
             if shap_values.ndim == 3:
-                shap_values_for_plot = shap_values[:, :, 1]
-            elif isinstance(shap_values, list) and len(shap_values) == 2:
-                shap_values_for_plot = shap_values[1]
+                shap_values_for_plot = shap_values[:, :, int(focus_class)]
+            elif isinstance(shap_values, list) and len(shap_values) >= 2:
+                shap_values_for_plot = shap_values[int(focus_class)]
             else:
                 shap_values_for_plot = shap_values
 
@@ -271,7 +389,7 @@ def explain_with_shap(model, x_test, feature_names):
             shap_data = x_scaled
 
             if isinstance(shap_values, list):
-                shap_values_for_plot = shap_values[1]
+                shap_values_for_plot = shap_values[int(focus_class)]
             else:
                 shap_values_for_plot = shap_values
 
@@ -287,9 +405,9 @@ def explain_with_shap(model, x_test, feature_names):
 
             shap_values = np.array(shap_values)
             if shap_values.ndim == 3:
-                shap_values_for_plot = shap_values[:, :, 1]
-            elif isinstance(shap_values, list) and len(shap_values) == 2:
-                shap_values_for_plot = shap_values[1]
+                shap_values_for_plot = shap_values[:, :, int(focus_class)]
+            elif isinstance(shap_values, list) and len(shap_values) >= 2:
+                shap_values_for_plot = shap_values[int(focus_class)]
             else:
                 shap_values_for_plot = shap_values
 
@@ -297,12 +415,12 @@ def explain_with_shap(model, x_test, feature_names):
                 raise ValueError(f"shap_values shape is invalid: {shap_values_for_plot.shape}")
             
         # SVM
-        if isinstance(model, SVC):
+        elif isinstance(model, SVC):
             background = x_test[:20]
             x_explain = x_test[:5]
 
             if hasattr(model, "predict_proba"):
-                f = lambda X: model.predict_proba(np.asarray(X, dtype=float))[:, 1]
+                f = lambda X: model.predict_proba(np.asarray(X, dtype=float))[:, int(focus_class)]
                 explainer = shap.KernelExplainer(f, background, link="logit")
                 shap_values = explainer.shap_values(x_explain, nsamples=100)
             else:
@@ -320,7 +438,7 @@ def explain_with_shap(model, x_test, feature_names):
             shap_data = shap_values.data
 
             if hasattr(shap_values, "values") and shap_values.values.ndim == 3:
-                shap_values_for_plot = shap_values.values[..., 1]
+                shap_values_for_plot = shap_values.values[:, :, int(focus_class)]
             else:
                 shap_values_for_plot = shap_values.values
 
@@ -346,27 +464,41 @@ def explain_with_shap(model, x_test, feature_names):
 
     return result
 
-def explain_with_lime(model, x_test, y_test, feature_names):
+def explain_with_lime(model, x_test, y_test, feature_names, focus_class=1):
     result = {}
     try:
+        x_test = np.asarray(x_test)
+        y_test = np.asarray(y_test).astype(int)
+
+        proba0 = model.predict_proba(x_test[:1])[0]
+        num_class = int(len(proba0))
+        class_names = [f"class_{i}" for i in range(num_class)]
+
+        if num_class == 2:
+            focus_class = 1
+        else:
+            focus_class = int(focus_class)
+            if focus_class < 0 or focus_class >= num_class:
+                focus_class = int(np.argmax(proba0))
+
         lime_explainer = LimeTabularExplainer(
             training_data=x_test,
             mode="classification",
             training_labels=y_test,
             feature_names=feature_names,
-            class_names=["class_0", "class_1"],
+            class_names=class_names,
             discretize_continuous=True,
         )
 
         lime_result = lime_explainer.explain_instance(
             x_test[0],  # 第0筆樣本
             model.predict_proba,
-            num_features=10
-            # num_features=len(x_test[0])
+            num_features=10,
+            labels=[focus_class]
         )
 
         # 儲存圖片到記憶體 buffer
-        fig = lime_result.as_pyplot_figure()
+        fig = lime_result.as_pyplot_figure(label=focus_class)
         fig.set_size_inches(10, 6)  # 改變圖的尺寸
         fig.tight_layout()  # 自動調整 layout
         buf = io.BytesIO()
@@ -377,25 +509,25 @@ def explain_with_lime(model, x_test, y_test, feature_names):
         plt.close(fig)  # 關閉圖避免重疊
 
         # 同時保留文字格式
-        result["lime_example_0"] = lime_result.as_list()
+        result["lime_example_0"] = lime_result.as_list(label=focus_class)
 
     except Exception as e:
         result["lime_error"] = str(e)
         
     return result
 
-def predict_single_model(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names):
+def predict_single_model(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names, focus_class=1):
     model = load_model(model_path)
     x_test, y_test, y_pred, data_with_preds = predict_labels(model, model_path, data, label_column, pred_column)
     save_predictions(data_with_preds, data_path, output_name, task_dir)
-    results = evaluate_model(y_test, y_pred, model, x_test)
-    shap_result = explain_with_shap(model, x_test, feature_names)
+    results = evaluate_model(y_test, y_pred, model, x_test, focus_class=focus_class)
+    shap_result = explain_with_shap(model, x_test, feature_names, focus_class=focus_class)
     results.update(shap_result)
-    lime_result = explain_with_lime(model, x_test, y_test, feature_names)
+    lime_result = explain_with_lime(model, x_test, y_test, feature_names, focus_class=focus_class)
     results.update(lime_result)
     return results
 
-def predict_stacking(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names):
+def predict_stacking(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names, focus_class=1):
     results = {
         "status": "success",
     }
@@ -432,27 +564,30 @@ def predict_stacking(model_path, data, label_column, pred_column, data_path, out
         # 載入資料
         x_test_df = data.drop(columns=[label_column], errors='ignore').copy()
         y_test = data[label_column].copy()
-        # 轉換成 meta features：每個 base model 的 predict_proba[:,1]
+        
+        # 轉換成 meta features：每個 base model 的 predict_proba[:, focus_class]
         base_preds = []
         for model in base_models:
-            if isinstance(model, TabNetClassifier):
-                proba = model.predict_proba(x_test_df.to_numpy(dtype=np.float32))[:, 1]
+            model_class_name = model.__class__.__name__.lower()
+            if isinstance(model, TabNetClassifier) or model_class_name.startswith("tabpfn"):
+                proba = model.predict_proba(x_test_df.to_numpy(dtype=np.float32))[:, int(focus_class)]
             else:
-                proba = model.predict_proba(x_test_df.values)[:, 1]
+                proba = model.predict_proba(x_test_df.values)[:, int(focus_class)]
             base_preds.append(proba)
+
         X_meta = np.column_stack(base_preds)
-        meta_feature_df = pd.DataFrame(X_meta, columns=[config.get("base_models", [])])
+        meta_feature_df = pd.DataFrame(X_meta, columns=config.get("base_models", []))
         save_predictions(meta_feature_df, data_path, "meta_feature", task_dir)
         # 最終預測
         y_pred = meta_model.predict(X_meta)
         data[pred_column] = y_pred
         # 儲存預測結果
         save_predictions(data, data_path, output_name, task_dir)
-        # 評估
-        results = evaluate_model(y_test, y_pred, meta_model, X_meta)
-        shap_result = explain_with_shap(meta_model, X_meta, config.get("base_models", []))
+        # 評估（meta model 的 focus_class 固定 1，因為 meta feature 已經是 binary score）
+        results = evaluate_model(y_test, y_pred, meta_model, X_meta, focus_class=1)
+        shap_result = explain_with_shap(meta_model, X_meta, config.get("base_models", []), focus_class=1)
         results.update(shap_result)
-        lime_result = explain_with_lime(meta_model, X_meta, y_test, config.get("base_models", []))
+        lime_result = explain_with_lime(meta_model, X_meta, y_test, config.get("base_models", []), focus_class=1)
         results.update(lime_result)
         return results
     except Exception as e:
@@ -468,24 +603,28 @@ def main(model_path, data_path, output_name, label_column, pred_column, task_dir
         data = load_data(data_path)
         feature_names = data.drop(columns=[label_column], errors='ignore').columns.tolist()
 
+        focus_class = 1  # 預設
+
         if model_path.endswith("zip"):
             try:
-                with zipfile.ZipFile(args.model_path, 'r') as zip_ref:
+                with zipfile.ZipFile(model_path, 'r') as zip_ref:
                     if "stacking_config.json" in zip_ref.namelist():
                         # 是 stacking zip
-                        results = predict_stacking(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names)
+                        results = predict_stacking(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names, focus_class=focus_class)
                     else:
                         # 是 tabnet 模型
-                        results = predict_single_model(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names)
+                        results = predict_single_model(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names, focus_class=focus_class)
             except zipfile.BadZipFile:
                 print(json.dumps({
                     "status": "error",
-                    "message": f"Invalid zip file: {args.model_path}",
+                    "message": f"Invalid zip file: {model_path}",
                 }))
+                return
         else:
-            results = predict_single_model(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names)
+            results = predict_single_model(model_path, data, label_column, pred_column, data_path, output_name, task_dir, feature_names, focus_class=focus_class)
             
         results["task_dir"] = task_dir
+        os.makedirs(task_dir, exist_ok=True)  
         result_json_path = os.path.join(task_dir, "metrics.json")
         with open(result_json_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=4, cls=NumpyEncoder, ensure_ascii=False)

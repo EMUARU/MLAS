@@ -631,6 +631,7 @@ export default {
         { value: 'catboost', label: 'lblCatBoost' },
         { value: 'adaboost', label: 'lblAdaBoost' },
         { value: 'svm', label: 'lblSvm' },
+        { value: 'tabpfn', label: 'lblTabPFN' },
       ],
       fileOptions: [],
       isUnmounted: false, // 防止跳轉後，API執行完仍繼續執行js，造成錯誤

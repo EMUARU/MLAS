@@ -3,17 +3,6 @@
 # python predict.py model.json input --input_values 1.0 TRUE 3.0 FALSE
 # read_csv 和 read_excel 會自行轉換數值型 (int 或 float)和布林型 (bool)
 
-# import subprocess
-# import sys
-# subprocess.check_call(
-#     [sys.executable, "-m", "pip", "install", "scikit-learn==1.5.2"],
-#     stdout=subprocess.DEVNULL
-# )
-# subprocess.check_call(
-#     [sys.executable, "-m", "pip", "install", "--upgrade", "xgboost"],
-#     stdout=subprocess.DEVNULL
-# )
-
 import argparse
 from tool_train import NumpyEncoder, extract_base64_images_and_clean_json
 import pandas as pd
@@ -52,18 +41,97 @@ import shutil
 from sklearn.ensemble import AdaBoostClassifier
 from sklearn.svm import SVC
 
+
+
+def _fix_xgb_n_classes(model):
+    """XGBoost 2.x workaround：load_model 之後有時不會還原 n_classes_"""
+    if not hasattr(model, "n_classes_"):
+        try:
+            booster = model.get_booster()
+            config = json.loads(booster.save_config())
+            num_class = int(config.get("learner", {}).get("learner_model_param", {}).get("num_class", 2))
+            # XGBoost binary 也可能回傳 num_class=0，代表 2 類
+            model.n_classes_ = max(num_class, 2)
+        except Exception:
+            model.n_classes_ = 2
+    return model
+
 def load_model(model_path):
     if model_path.lower().endswith(".json"):  # .json 結尾
         model = XGBClassifier()
         model.load_model(model_path)
-        # print(f"XGBoost 模型已從 {model_path} 載入")
+        model = _fix_xgb_n_classes(model)
     elif model_path.lower().endswith(".pkl"):
         model = joblib.load(model_path)
-        # print(f"模型已從 {model_path} 載入")
     elif model_path.lower().endswith(".zip"):
-        model = TabNetClassifier()
-        model.load_model(model_path)
-        # print(f"模型已從 {model_path} 載入")
+        # 修改：區分 TabNet zip 和訓練結果 zip
+        try:
+            with zipfile.ZipFile(model_path, 'r') as zip_ref:
+                file_list = zip_ref.namelist()
+                
+                # 檢查是否為 stacking zip
+                if "stacking_config.json" in file_list:
+                    # stacking 模型由 predict_stacking 處理，這裡不應該進來
+                    raise ValueError("Stacking model should be handled by predict_stacking()")
+                
+                # ✅ 新增：檢查是否為訓練結果 zip（包含 .json 模型檔案）
+                excluded_jsons = {'metrics.json', 'status.json', 'model_params.json', 'stacking_config.json'}
+                json_model_files = [f for f in file_list if f.endswith('.json') and f not in excluded_jsons]
+                if json_model_files:
+                    # 解壓到暫存目錄並載入 XGBoost 模型
+                    temp_dir = tempfile.mkdtemp()
+                    try:
+                        zip_ref.extractall(temp_dir)
+                        json_path = os.path.join(temp_dir, json_model_files[0])
+                        model = XGBClassifier()
+                        model.load_model(json_path)
+                        model = _fix_xgb_n_classes(model)
+                        return model
+                    finally:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                
+                # 檢查是否為訓練結果 zip（包含 .pkl 檔案）
+                pkl_files = [f for f in file_list if f.endswith('.pkl')]
+                if pkl_files:
+                    # 解壓到暫存目錄並載入 pkl 模型
+                    temp_dir = tempfile.mkdtemp()
+                    try:
+                        zip_ref.extractall(temp_dir)
+                        pkl_path = os.path.join(temp_dir, pkl_files[0])
+                        model = joblib.load(pkl_path)
+                    finally:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    return model
+                
+                # 檢查是否為 TabNet 模型 zip（包含 model_params.json 等）
+                if "model_params.json" in file_list or any('network' in f for f in file_list):
+                    model = TabNetClassifier()
+                    model.load_model(model_path)
+                    return model
+                
+                # 檢查是否有內嵌的 .zip（可能是 TabNet）
+                inner_zips = [f for f in file_list if f.endswith('.zip')]
+                if inner_zips:
+                    temp_dir = tempfile.mkdtemp()
+                    try:
+                        zip_ref.extractall(temp_dir)
+                        inner_zip_path = os.path.join(temp_dir, inner_zips[0])
+                        model = TabNetClassifier()
+                        model.load_model(inner_zip_path)
+                        return model
+                    except Exception:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                
+                # 都不是，嘗試當作 TabNet 載入
+                model = TabNetClassifier()
+                model.load_model(model_path)
+                
+        except zipfile.BadZipFile:
+            print(json.dumps({
+                "status": "error",
+                "message": f"Invalid zip file: {model_path}",
+            }))
+            sys.exit(1)
     else:
         print(json.dumps({
             "status": "error",
@@ -71,6 +139,7 @@ def load_model(model_path):
         }))
         sys.exit(1)
     return model
+
 
 def load_data(data_path):
     if data_path.endswith(".csv"):
@@ -80,17 +149,20 @@ def load_data(data_path):
     # print(f"Data loaded from {data_path}")
     return data
 
-def explain_with_shap(model, x_test, feature_names):
+def explain_with_shap(model, x_test, feature_names, focus_class=1):
     result = {}
     try:
         x_test = np.array(x_test, dtype=np.float32)
-        is_tabnet = (
+        class_name = model.__class__.__name__.lower()
+        is_tabnet_or_tabpfn = (
             hasattr(model, "predict_proba") and
-            not hasattr(model, "predict")  # TabNet 沒有原生 predict，只有 predict_proba
-        ) or model.__class__.__name__.lower().startswith("tabnet")
+            not hasattr(model, "predict")  # TabNet 沒有原生 predict，只有 predict_proba，把 TabPFN 也視為「用 KernelExplainer + predict_proba」的類型
+        )\
+        or class_name.startswith("tabnet")\
+        or class_name.startswith("tabpfn")  # 新增：TabPFN
 
-        if is_tabnet:
-            # 專門為 TabNet 使用 KernelExplainer
+        if is_tabnet_or_tabpfn:
+            # TabNet / TabPFN 共用：KernelExplainer + predict_proba
             background = x_test[:20]
             explain_data = x_test[:5]
 
@@ -100,9 +172,9 @@ def explain_with_shap(model, x_test, feature_names):
 
             shap_values = np.array(shap_values)
             if shap_values.ndim == 3:
-                shap_values_for_plot = shap_values[:, :, 1]
-            elif isinstance(shap_values, list) and len(shap_values) == 2:
-                shap_values_for_plot = shap_values[1]
+                shap_values_for_plot = shap_values[:, :, int(focus_class)]
+            elif isinstance(shap_values, list) and len(shap_values) >= 2:
+                shap_values_for_plot = shap_values[int(focus_class)]
             else:
                 shap_values_for_plot = shap_values
 
@@ -119,7 +191,7 @@ def explain_with_shap(model, x_test, feature_names):
             shap_data = x_scaled
 
             if isinstance(shap_values, list):
-                shap_values_for_plot = shap_values[1]
+                shap_values_for_plot = shap_values[int(focus_class)]
             else:
                 shap_values_for_plot = shap_values
 
@@ -133,135 +205,122 @@ def explain_with_shap(model, x_test, feature_names):
             shap_values = explainer.shap_values(explain_data)
             shap_data = explain_data
 
-            shap_values = np.array(shap_values)
-            if shap_values.ndim == 3:
-                shap_values_for_plot = shap_values[:, :, 1]
-            elif isinstance(shap_values, list) and len(shap_values) == 2:
-                shap_values_for_plot = shap_values[1]
+            if isinstance(shap_values, list):
+                shap_values_for_plot = shap_values[int(focus_class)]
             else:
                 shap_values_for_plot = shap_values
 
-            if shap_values_for_plot.ndim != 2:
-                raise ValueError(f"shap_values shape is invalid: {shap_values_for_plot.shape}")
-        
-        # SVM
-        if isinstance(model, SVC):
+        elif isinstance(model, SVC):
             background = x_test[:20]
-            x_explain = x_test[:5]
+            explain_data = x_test[:5]
 
-            if hasattr(model, "predict_proba"):
-                f = lambda X: model.predict_proba(np.asarray(X, dtype=float))[:, 1]
-                explainer = shap.KernelExplainer(f, background, link="logit")
-                shap_values = explainer.shap_values(x_explain, nsamples=100)
+            predict_fn = lambda x: model.predict_proba(x)
+            explainer = shap.KernelExplainer(predict_fn, background)
+            shap_values = explainer.shap_values(explain_data)
+            shap_data = explain_data
+
+            if isinstance(shap_values, list):
+                shap_values_for_plot = shap_values[int(focus_class)]
             else:
-                f = lambda X: model.predict(np.asarray(X, dtype=float)).astype(float)
-                explainer = shap.KernelExplainer(f, background, link="identity")
-                shap_values = explainer.shap_values(x_explain, nsamples=100)
-
-            shap_values_for_plot = shap_values
-            shap_data = x_explain
+                shap_values_for_plot = shap_values
 
         else:
-            # 其他模型使用 shap.Explainer（TreeExplainer, etc.）
             explainer = shap.Explainer(model, x_test)
-            shap_values = explainer(x_test, check_additivity=False)
-            shap_data = shap_values.data
+            shap_values = explainer(x_test)
+            shap_data = x_test
 
-            if hasattr(shap_values, "values") and shap_values.values.ndim == 3:
-                shap_values_for_plot = shap_values.values[..., 1]
+            if hasattr(shap_values, "values"):
+                raw_shap = shap_values.values
             else:
-                shap_values_for_plot = shap_values.values
+                raw_shap = shap_values
 
-        # 平均重要度
-        shap_importance = np.abs(shap_values_for_plot).mean(axis=0)
-        result["shap_importance"] = {
-            feature_names[i]: float(val) for i, val in enumerate(shap_importance)
-        }
+            if isinstance(raw_shap, list):
+                shap_values_for_plot = raw_shap[int(focus_class)]
+            elif raw_shap.ndim == 3:
+                shap_values_for_plot = raw_shap[:, :, int(focus_class)]
+            else:
+                shap_values_for_plot = raw_shap
 
-        # beeswarm plot
         plt.figure(figsize=(10, 6))
         shap.summary_plot(shap_values_for_plot, shap_data, feature_names=feature_names, show=False)
-        plt.tight_layout()
         buf = io.BytesIO()
-        plt.savefig(buf, format='png')
+        plt.savefig(buf, format='png', bbox_inches='tight')
         buf.seek(0)
-        result["shap_plot"] = base64.b64encode(buf.getvalue()).decode("utf-8")
-        buf.close()
+        shap_base64 = base64.b64encode(buf.read()).decode('utf-8')
         plt.close()
+
+        mean_abs_shap = np.abs(shap_values_for_plot).mean(axis=0)
+        importance_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': mean_abs_shap
+        }).sort_values(by='Importance', ascending=False)
+
+        result["shap_plot"] = shap_base64
+        result["shap_importance"] = importance_df.to_dict(orient='records')
 
     except Exception as e:
         result["shap_error"] = str(e)
 
     return result
 
-def explain_with_lime(model, x_test, y_test, feature_names):
+
+def explain_with_lime(model, x_test, y_pred, feature_names, focus_class=1):
     result = {}
     try:
-        lime_explainer = LimeTabularExplainer(
+        x_test = np.array(x_test, dtype=np.float32)
+        y_pred = np.array(y_pred)
+
+        proba0 = model.predict_proba(x_test[:1])[0]
+        num_class = int(len(proba0))
+        class_names = [f"Class {i}" for i in range(num_class)]
+
+        if num_class == 2:
+            focus_class = 1
+        else:
+            focus_class = int(focus_class)
+            if focus_class < 0 or focus_class >= num_class:
+                focus_class = int(np.argmax(proba0))
+
+        explainer = LimeTabularExplainer(
             training_data=x_test,
-            mode="classification",
-            training_labels=y_test,
             feature_names=feature_names,
-            class_names=["class_0", "class_1"],
-            discretize_continuous=True,
+            class_names=class_names,
+            mode='classification',
+            discretize_continuous=True
         )
 
-        lime_result = lime_explainer.explain_instance(
-            x_test[0],  # 第0筆樣本
+        # 取第一筆作為範例說明
+        explanation = explainer.explain_instance(
+            x_test[0],
             model.predict_proba,
-            num_features=10
-            # num_features=len(x_test[0])
+            num_features=len(feature_names),
+            labels=[focus_class]
         )
 
-        # 儲存圖片到記憶體 buffer
-        fig = lime_result.as_pyplot_figure()
-        fig.set_size_inches(10, 6)  # 改變圖的尺寸
-        fig.tight_layout()  # 自動調整 layout
+        fig = explanation.as_pyplot_figure(label=focus_class)
         buf = io.BytesIO()
-        fig.savefig(buf, format='png')
+        fig.savefig(buf, format='png', bbox_inches='tight')
         buf.seek(0)
-        result["lime_plot"] = base64.b64encode(buf.getvalue()).decode('utf-8')
-        buf.close()
-        plt.close(fig)  # 關閉圖避免重疊
+        lime_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        plt.close(fig)
 
-        # 同時保留文字格式
-        result["lime_example_0"] = lime_result.as_list()
+        result["lime_plot"] = lime_base64
+        result["lime_example_0"] = explanation.as_list(label=focus_class)
 
     except Exception as e:
         result["lime_error"] = str(e)
-        
     return result
 
-def predict_labels(model, model_path, data, label_column):
-    feature_names = data.columns.tolist()
-    x_test = data.copy()
-    if model_path.lower().endswith(".zip"): # tabnet 只吃 numpy array，不吃 object
-        x_test = x_test.to_numpy(dtype=np.float32)
-    else:
-        x_test = x_test.values
-    y_pred = model.predict(x_test)
-    data[label_column] = y_pred
-
-    explain_result = {}
-    try:
-        explain_result["shap"] = explain_with_shap(model, x_test, feature_names)
-        explain_result["lime"] = explain_with_lime(model, x_test, y_pred, feature_names)
-    except Exception as e:
-        explain_result["explain_error"] = str(e)
-
-    return data, explain_result
 
 def save_predictions(data, data_path, output_name, task_dir):
     os.makedirs(task_dir, exist_ok=True)
+    output_path = os.path.join(task_dir, output_name)
 
-    # output_path = os.path.join(result_dir, output_name)
     if data_path.endswith(".csv"):
-        output_path = os.path.join(task_dir, f"{output_name}.csv")
-        data.to_csv(output_path, index=False, encoding='utf-8-sig')
+        data.to_csv(output_path + ".csv", index=False)
     elif data_path.endswith(".xlsx"):
-        output_path = os.path.join(task_dir, f"{output_name}.xlsx")
-        data.to_excel(output_path, index=False)
-    return output_path
+        data.to_excel(output_path + ".xlsx", index=False)
+
 
 def predict_input(model, model_path, input_values, task_dir):
     # 將輸入值解析為適當的型態
@@ -279,32 +338,57 @@ def predict_input(model, model_path, input_values, task_dir):
                     raise ValueError(f"無法解析輸入值：{value}，請確認格式正確！")
         else:
             parsed_values.append(float(value))
-
-    # 預測結果
-    if model_path.lower().endswith(".zip"): # tabnet 只吃 numpy array，不吃 object
-        prediction = model.predict(np.array([parsed_values], dtype=np.float32))
+    input_df = pd.DataFrame([parsed_values])
+    model_class_name = model.__class__.__name__.lower()
+    if isinstance(model, TabNetClassifier) or model_class_name.startswith("tabpfn"):
+        prediction = model.predict(input_df.to_numpy(dtype=np.float32))
     else:
-        prediction = model.predict([parsed_values])
-
+        prediction = model.predict(input_df)
+    
     if isinstance(prediction, np.ndarray):
         prediction = prediction.tolist()
-
-    result = {
+    
+    return {
         "status": "success",
         "prediction": prediction,
     }
-    return result
 
-def predict_single_model(model_path, mode, task_dir, data_path=None, label_column=None, output_name=None, input_values=None):
-    model = load_model(model_path)
+
+def predict_single_model(model_path, mode, task_dir, data_path=None, label_column=None, output_name=None, input_values=None, focus_class=1):
     try:
+        model = load_model(model_path)
         if mode == "file":
-            data = load_data(data_path)
-            data_with_predictions, explanations = predict_labels(model, model_path, data, label_column)
-            output_path = save_predictions(data_with_predictions, data_path, output_name, task_dir)
             result = {
                 "status": "success",
-                # "message": f"Predictions saved to {output_path}",
+            }
+            data = load_data(data_path)
+            feature_names = data.columns.tolist()
+            x_test = data.copy()
+            model_class_name = model.__class__.__name__.lower()
+            if isinstance(model, TabNetClassifier) or model_class_name.startswith("tabpfn"):
+                prediction = model.predict(x_test.to_numpy(dtype=np.float32))
+            else:
+                prediction = model.predict(x_test)
+            
+            data[label_column] = prediction
+            # 儲存預測結果
+            save_predictions(data, data_path, output_name, task_dir)
+
+            explanations = {}
+            try:
+                shap_result = explain_with_shap(model, x_test.values, feature_names, focus_class=focus_class)
+                explanations["shap"] = shap_result
+            except Exception as e:
+                explanations["shap"] = {"shap_error": str(e)}
+
+            try:
+                lime_result = explain_with_lime(model, x_test.values, prediction, feature_names, focus_class=focus_class)
+                explanations["lime"] = lime_result
+            except Exception as e:
+                explanations["lime"] = {"lime_error": str(e)}
+
+            result = {
+                "status": "success",
             }
             shap_result = explanations.get("shap", {})
             if shap_result.get("shap_plot"):
@@ -325,7 +409,62 @@ def predict_single_model(model_path, mode, task_dir, data_path=None, label_colum
             "message": f"{e}"
         }
 
-def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=None, output_name=None, input_values=None):
+
+def infer_stacking_config(temp_dir):
+    """從檔案名稱推斷 stacking 配置（當沒有 stacking_config.json 時）"""
+    files = os.listdir(temp_dir)
+    
+    # 找出所有 base models
+    base_models = []
+    model_name_map = {
+        'lgbm': 'lgbm',
+        'xgb': 'xgb', 
+        'rf': 'rf',
+        'svm': 'svm',
+        'tabnet': 'tabnet',
+        'tabpfn': 'tabpfn',
+        'logistic_regression': 'logistic_regression',
+        'lr': 'logistic_regression',
+    }
+    
+    # ✅ 修正：只處理模型檔案，排除圖片
+    model_extensions = ('.pkl', '.json', '.zip')
+    
+    for f in files:
+        # 排除 base_results_* 這類圖片檔案
+        if f.startswith('base_') and not f.startswith('base_results_') and f.endswith(model_extensions):
+            # 從檔名解析模型類型，例如 base_lgbm.pkl -> lgbm
+            name_without_ext = os.path.splitext(f)[0]  # base_lgbm
+            model_key = name_without_ext.replace('base_', '')  # lgbm
+            
+            # 標準化模型名稱
+            if model_key in model_name_map:
+                base_models.append(model_key)
+            else:
+                base_models.append(model_key)
+    
+    # 找出 meta model
+    meta_model = None
+    for f in files:
+        # ✅ 修正：排除 meta_results_* 這類圖片檔案
+        if f.startswith('meta_') and not f.startswith('meta_results_') and f.endswith(model_extensions):
+            name_without_ext = os.path.splitext(f)[0]  # meta_xgb
+            model_key = name_without_ext.replace('meta_', '')  # xgb
+            meta_model = model_key
+            break
+    
+    if not base_models:
+        raise ValueError("No base models found in stacking ZIP")
+    if not meta_model:
+        raise ValueError("No meta model found in stacking ZIP")
+    
+    return {
+        "base_models": base_models,
+        "meta_model": meta_model
+    }
+
+
+def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=None, output_name=None, input_values=None, focus_class=1):
     result = {
         "status": "success",
     }
@@ -334,9 +473,16 @@ def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=No
         # 解壓 ZIP 到 temp 目錄
         with zipfile.ZipFile(model_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
+        
+        # 嘗試讀取 config，如果不存在則推斷
         config_path = os.path.join(temp_dir, "stacking_config.json")
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            # 沒有 config，從檔案名稱推斷
+            config = infer_stacking_config(temp_dir)
+        
         # 載入 base models
         base_models = []
         for base_name in config.get("base_models", []):
@@ -349,6 +495,7 @@ def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=No
             base_model_path = os.path.join(temp_dir, filename)
             model = load_model(base_model_path)
             base_models.append(model)
+        
         # 載入 meta model
         meta_name = config.get("meta_model")
         if meta_name == "xgb":
@@ -359,34 +506,48 @@ def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=No
             meta_file = f"meta_{meta_name}.pkl"
         meta_model_path = os.path.join(temp_dir, meta_file)
         meta_model = load_model(meta_model_path)
+        
         # 檔案預測模式
         if mode == "file":
             data = load_data(data_path)
             feature_names = data.columns.tolist()
             x_test = data.copy()
-            # 轉換成 meta features：每個 base model 的 predict_proba[:,1]
+            
+            # 轉換成 meta features：每個 base model 的 predict_proba[:, focus_class]
             base_preds = []
             for model in base_models:
-                if isinstance(model, TabNetClassifier):
-                    proba = model.predict_proba(x_test.to_numpy(dtype=np.float32))[:, 1]
+                model_class_name = model.__class__.__name__.lower()
+                if isinstance(model, TabNetClassifier) or model_class_name.startswith("tabpfn"):
+                    proba = model.predict_proba(x_test.to_numpy(dtype=np.float32))[:, int(focus_class)]
                 else:
-                    proba = model.predict_proba(x_test.values)[:, 1]
+                    proba = model.predict_proba(x_test.values)[:, int(focus_class)]
                 base_preds.append(proba)
+            
             X_meta = np.column_stack(base_preds)
-            meta_feature_df = pd.DataFrame(X_meta, columns=[config.get("base_models", [])])
+            meta_feature_df = pd.DataFrame(X_meta, columns=config.get("base_models", []))
             save_predictions(meta_feature_df, data_path, "meta_feature", task_dir)
+            
             # 最終預測
             y_pred = meta_model.predict(X_meta)
             data[label_column] = y_pred
+            
             # 儲存預測結果
             save_predictions(data, data_path, output_name, task_dir)
-            # 評估
+
+            # 評估（meta model 的 focus_class 固定 1，因為 meta feature 已經是 binary score）
             explanations = {}
             try:
-                explanations["shap"] = explain_with_shap(meta_model, X_meta, config.get("base_models", []))
-                explanations["lime"] = explain_with_lime(meta_model, X_meta, y_pred, config.get("base_models", []))
+                shap_result = explain_with_shap(meta_model, X_meta, config.get("base_models", []), focus_class=1)
+                explanations["shap"] = shap_result
             except Exception as e:
-                explanations["explain_error"] = str(e)
+                explanations["shap"] = {"shap_error": str(e)}
+
+            try:
+                lime_result = explain_with_lime(meta_model, X_meta, y_pred, config.get("base_models", []), focus_class=1)
+                explanations["lime"] = lime_result
+            except Exception as e:
+                explanations["lime"] = {"lime_error": str(e)}
+
             shap_result = explanations.get("shap", {})
             if shap_result.get("shap_plot"):
                 result["shap_plot"] = shap_result["shap_plot"]
@@ -397,6 +558,7 @@ def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=No
                 result["lime_plot"] = lime_result["lime_plot"]
             if lime_result.get("lime_example_0"):
                 result["lime_example_0"] = lime_result["lime_example_0"]
+        
         # 手動輸入預測模式
         else:
             # 將輸入值解析為適當的型態
@@ -414,17 +576,23 @@ def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=No
                             raise ValueError(f"無法解析輸入值：{value}，請確認格式正確！")
                 else:
                     parsed_values.append(float(value))
-            # 轉換成 meta features：每個 base model 的 predict_proba[:,1]
+            
+            x_test = pd.DataFrame([parsed_values])
+            
+            # 轉換成 meta features
             base_preds = []
             for model in base_models:
-                if isinstance(model, TabNetClassifier):
-                    proba = model.predict_proba(np.array([parsed_values], dtype=np.float32))[:, 1]
+                model_class_name = model.__class__.__name__.lower()
+                if isinstance(model, TabNetClassifier) or model_class_name.startswith("tabpfn"):
+                    proba = model.predict_proba(x_test.to_numpy(dtype=np.float32))[:, int(focus_class)]
                 else:
-                    proba = model.predict_proba([parsed_values])[:, 1]
+                    proba = model.predict_proba(x_test.values)[:, int(focus_class)]
                 base_preds.append(proba)
+
             X_meta = np.column_stack(base_preds)
-            meta_feature_df = pd.DataFrame(X_meta, columns=[config.get("base_models", [])])
+            meta_feature_df = pd.DataFrame(X_meta, columns=config.get("base_models", []))
             save_predictions(meta_feature_df, ".csv", "meta_feature", task_dir)
+            
             # 最終預測
             prediction = meta_model.predict(X_meta)
             if isinstance(prediction, np.ndarray):
@@ -442,25 +610,58 @@ def predict_stacking(model_path, mode, task_dir, data_path=None, label_column=No
     finally:
         shutil.rmtree(temp_dir)  # 清除暫存資料夾
 
+
+def is_stacking_zip(file_list):
+    """判斷 ZIP 是否為 Stacking 模型"""
+    # 方法 1：有 stacking_config.json
+    if "stacking_config.json" in file_list:
+        return True
+    
+    # 方法 2：有 base_* 和 meta_* 模型檔案（排除圖片）
+    model_extensions = ('.pkl', '.json', '.zip')
+    has_base = any(
+        f.startswith('base_') 
+        and not f.startswith('base_results_')
+        and f.endswith(model_extensions) 
+        for f in file_list
+    )
+    has_meta = any(
+        f.startswith('meta_') 
+        and not f.startswith('meta_results_')
+        and f.endswith(model_extensions) 
+        for f in file_list
+    )
+    
+    return has_base and has_meta
+
+
 def main(model_path, mode, task_dir, data_path=None, output_name=None, input_values=None, label_column="label"):
     try:
+        focus_class = 1  # 預設
+
         if model_path.endswith("zip"):
             try:
                 with zipfile.ZipFile(model_path, 'r') as zip_ref:
-                    if "stacking_config.json" in zip_ref.namelist():
+                    file_list = zip_ref.namelist()
+                    
+                    # 改進的判斷邏輯：不只檢查 config，也檢查 base_/meta_ 檔案
+                    if is_stacking_zip(file_list):
                         # 是 stacking zip
-                        results = predict_stacking(model_path, mode, task_dir, data_path, label_column, output_name, input_values)
+                        results = predict_stacking(model_path, mode, task_dir, data_path, label_column, output_name, input_values, focus_class=focus_class)
                     else:
-                        # 是 tabnet 模型
-                        results = predict_single_model(model_path, mode, task_dir, data_path, label_column, output_name, input_values)
+                        # 是單一模型（TabNet 或訓練結果）
+                        results = predict_single_model(model_path, mode, task_dir, data_path, label_column, output_name, input_values, focus_class=focus_class)
             except zipfile.BadZipFile:
                 print(json.dumps({
                     "status": "error",
                     "message": f"Invalid zip file: {model_path}",
                 }))
+                return
         else:
-            results = predict_single_model(model_path, mode, task_dir, data_path, label_column, output_name, input_values)
+            results = predict_single_model(model_path, mode, task_dir, data_path, label_column, output_name, input_values, focus_class=focus_class)
+        
         results["task_dir"] = task_dir
+        os.makedirs(task_dir, exist_ok=True)  
         result_json_path = os.path.join(task_dir, "metrics.json")
         with open(result_json_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=4, cls=NumpyEncoder, ensure_ascii=False)

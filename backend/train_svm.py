@@ -54,28 +54,42 @@ def train_svm(x_train, y_train, x_val, y_val, model_name, C, kernel, task_dir):
 
     return svm
 
-def evaluate_model(y_test, y_pred, model, x_test):
-    y_test = y_test.astype(float)
-    y_pred = y_pred.astype(float)
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+def evaluate_model(y_test, y_pred, model, x_test, focus_class=1):
+    y_test = np.asarray(y_test).astype(int)
+    x_test = np.asarray(x_test)
+
+    y_pred_proba = model.predict_proba(x_test)
+    num_class = int(y_pred_proba.shape[1])
+
+    if num_class == 2:
+        y_true_bin = y_test
+        y_score = y_pred_proba[:, 1]
+    else:
+        focus_class = int(focus_class)
+        y_true_bin = (y_test == focus_class).astype(int)
+        y_score = y_pred_proba[:, focus_class]
+
+    y_pred_bin = (y_score >= 0.5).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true_bin, y_pred_bin, labels=[0, 1]).ravel()
     result = {
         "status": "success",
+        "num_class": int(num_class),
+        "focus_class": int(focus_class) if num_class > 2 else 1,
         "confusion_matrix": {
-            "true_negative": tn,
-            "false_positive": fp,
-            "false_negative": fn,
-            "true_positive": tp,
+            "true_negative": int(tn),
+            "false_positive": int(fp),
+            "false_negative": int(fn),
+            "true_positive": int(tp),
         },
         "metrics": {
-            "accuracy": float(accuracy_score(y_test, y_pred) * 100),
-            "recall": float(recall_score(y_test, y_pred) * 100),
-            "precision": float(precision_score(y_test, y_pred) * 100),
-            "f1_score": float(f1_score(y_test, y_pred) * 100),
+            "accuracy": float(accuracy_score(y_true_bin, y_pred_bin) * 100),
+            "recall": float(recall_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
+            "precision": float(precision_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
+            "f1_score": float(f1_score(y_true_bin, y_pred_bin, zero_division=0) * 100),
         }
     }
 
-    # recall 分析
-    y_pred_proba = model.predict_proba(x_test)
+    # recall 門檻掃描
     thresh_list = []
     accuracy_score_list = []
     precision_score_list = []
@@ -84,20 +98,40 @@ def evaluate_model(y_test, y_pred, model, x_test):
     specificity_score_list = []
     npv_score_list = []
     confusion_matrix_list = []
-    for th in range(1,101):
-        th *= 0.01
-        y_pred = [0 if (x[0] >= th) else 1 for x in y_pred_proba]
-        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-        specificity = tn / (tn+fp) if (tn + fp) > 0 else 0
-        npv = tn / (fn+tn) if (fn + tn) > 0 else 0
-        thresh_list.append(th)
-        accuracy_score_list.append(accuracy_score(y_test, y_pred) * 100)
-        precision_score_list.append(precision_score(y_test, y_pred, zero_division=0) * 100)
-        recall_score_list.append(recall_score(y_test, y_pred, zero_division=0) * 100)
-        f1_score_list.append(f1_score(y_test, y_pred, zero_division=0) * 100)
-        specificity_score_list.append(specificity * 100)
-        npv_score_list.append(npv * 100)
-        confusion_matrix_list.append([tn, fp, fn, tp])
+
+    if num_class == 2:
+        score_for_threshold = y_pred_proba[:, 0]
+        for th_int in range(1, 101):
+            th = th_int * 0.01
+            y_pred_th = np.array([0 if (p0 >= th) else 1 for p0 in score_for_threshold], dtype=int)
+            tn2, fp2, fn2, tp2 = confusion_matrix(y_test, y_pred_th, labels=[0, 1]).ravel()
+            specificity = tn2 / (tn2 + fp2) if (tn2 + fp2) > 0 else 0
+            npv = tn2 / (fn2 + tn2) if (fn2 + tn2) > 0 else 0
+            thresh_list.append(th)
+            accuracy_score_list.append(accuracy_score(y_test, y_pred_th) * 100)
+            precision_score_list.append(precision_score(y_test, y_pred_th, zero_division=0) * 100)
+            recall_score_list.append(recall_score(y_test, y_pred_th, zero_division=0) * 100)
+            f1_score_list.append(f1_score(y_test, y_pred_th, zero_division=0) * 100)
+            specificity_score_list.append(specificity * 100)
+            npv_score_list.append(npv * 100)
+            confusion_matrix_list.append([tn2, fp2, fn2, tp2])
+    else:
+        for th_int in range(1, 101):
+            th = th_int * 0.01
+            y_pred_th = (y_score >= th).astype(int)
+            tn2, fp2, fn2, tp2 = confusion_matrix(y_true_bin, y_pred_th, labels=[0, 1]).ravel()
+            specificity = tn2 / (tn2 + fp2) if (tn2 + fp2) > 0 else 0
+            npv = tn2 / (fn2 + tn2) if (fn2 + tn2) > 0 else 0
+            thresh_list.append(th)
+            accuracy_score_list.append(accuracy_score(y_true_bin, y_pred_th) * 100)
+            precision_score_list.append(precision_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            recall_score_list.append(recall_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            f1_score_list.append(f1_score(y_true_bin, y_pred_th, zero_division=0) * 100)
+            specificity_score_list.append(specificity * 100)
+            npv_score_list.append(npv * 100)
+            confusion_matrix_list.append([tn2, fp2, fn2, tp2])
+
+
 
     recall_standard_list = [80, 85, 90, 95]
     for recall_standard in recall_standard_list:
@@ -159,13 +193,10 @@ def evaluate_model(y_test, y_pred, model, x_test):
             "true_positive": best_confusion_matrix[3]
         }
 
-    # plot
-    y_pred_roc = [x[1] for x in y_pred_proba]
-    guess_tp = np.arange(0, 1, 0.001)
-    guess_fp = np.arange(0, 1, 0.001)
-    fpr, tpr, thresholds = metrics.roc_curve(y_test, y_pred_roc, pos_label=1)
-    plt.plot(fpr,tpr, color='m', label = "ROC curve")
-    plt.plot(guess_fp,guess_tp, color='0', linestyle="-.")
+    # plot ROC
+    fpr, tpr, thresholds = metrics.roc_curve(y_true_bin, y_score, pos_label=1)
+    plt.plot(fpr, tpr, color='m', label="ROC curve")
+    plt.plot(np.arange(0, 1, 0.001), np.arange(0, 1, 0.001), color='0', linestyle="-.")
     plt.ylabel("True Positive Rate")
     plt.xlabel("False Positive Rate")
     plt.legend()
@@ -180,7 +211,7 @@ def evaluate_model(y_test, y_pred, model, x_test):
     result['roc'] = image_base64
     return result
 
-def explain_with_shap(model, x_test, feature_names):
+def explain_with_shap(model, x_test, feature_names, focus_class=1):
     result = {}
     try:
         # 轉成 numpy，避免物件型造成 SHAP/LIME 出錯
@@ -195,7 +226,7 @@ def explain_with_shap(model, x_test, feature_names):
         # 若模型有 predict_proba 且為二分類，僅回傳正類機率 (scalar output)
         if hasattr(model, "predict_proba"):
             # 以正類機率作為 f(x)；這樣 link='logit' 就能作用在標量上
-            f = lambda X: model.predict_proba(np.asarray(X, dtype=float))[:, 1]
+            f = lambda X: model.predict_proba(np.asarray(X, dtype=float))[:, int(focus_class)]
             explainer = shap.KernelExplainer(f, background, link="logit")
             shap_values = explainer.shap_values(x_explain, nsamples=100)  # shape: (n_samples, n_features)
 
@@ -227,7 +258,7 @@ def explain_with_shap(model, x_test, feature_names):
 
     return result
 
-def explain_with_lime(model, x_test, y_test, feature_names):
+def explain_with_lime(model, x_test, y_test, feature_names, focus_class=1):
     result = {}
     try:
         lime_explainer = LimeTabularExplainer(
@@ -235,19 +266,19 @@ def explain_with_lime(model, x_test, y_test, feature_names):
             mode="classification",
             training_labels=y_test,
             feature_names=feature_names,
-            class_names=["class_0", "class_1"],
+            class_names=[f"class_{i}" for i in range(len(model.predict_proba(x_test[:1])[0]))],
             discretize_continuous=True,
         )
 
         lime_result = lime_explainer.explain_instance(
             x_test[0],  # 第0筆樣本
             model.predict_proba,
-            num_features=10
-            # num_features=len(x_test[0])
+            num_features=10,
+            labels=[int(focus_class)]
         )
 
         # 儲存圖片到記憶體 buffer
-        fig = lime_result.as_pyplot_figure()
+        fig = lime_result.as_pyplot_figure(label=int(focus_class))
         fig.set_size_inches(10, 6)  # 改變圖的尺寸
         fig.tight_layout()  # 自動調整 layout
         buf = io.BytesIO()
@@ -258,14 +289,14 @@ def explain_with_lime(model, x_test, y_test, feature_names):
         plt.close(fig)  # 關閉圖避免重疊
 
         # 同時保留文字格式
-        result["lime_example_0"] = lime_result.as_list()
+        result["lime_example_0"] = lime_result.as_list(label=int(focus_class))
 
     except Exception as e:
         result["lime_error"] = str(e)
         
     return result
 
-def kfold_evaluation(x, y, cv_folds, model_name, C, kernel, feature_names, task_dir):
+def kfold_evaluation(x, y, cv_folds, model_name, C, kernel, feature_names, task_dir, focus_class=1):
     skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=30)
     folds_result = []
     all_metrics = {
@@ -285,20 +316,28 @@ def kfold_evaluation(x, y, cv_folds, model_name, C, kernel, feature_names, task_
 
         model_fold_name = f"{model_name}_fold_{fold_index}"
         model = train_svm(x_train, y_train, x_val, y_val, model_fold_name, C, kernel, task_dir)
-        y_pred_proba = model.predict_proba(x_val)[:, 1]
+
+        # Multi-class: convert to binary view
+        _num_class = len(model.classes_) if hasattr(model, "classes_") else 2
+        if _num_class > 2:
+            y_val_bin = (y_val == int(focus_class)).astype(int)
+        else:
+            y_val_bin = y_val
+
+        y_pred_proba = model.predict_proba(x_val)[:, int(focus_class)]
         y_pred = (y_pred_proba >= 0.5).astype(int)
 
-        tn, fp, fn, tp = confusion_matrix(y_val, y_pred).ravel()
+        tn, fp, fn, tp = confusion_matrix(y_val_bin, y_pred, labels=[0, 1]).ravel()
         total_tn += tn
         total_fp += fp
         total_fn += fn
         total_tp += tp
 
-        accuracy = (tp + tn) / (tp + tn + fp + fn)
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        fpr, tpr, _ = roc_curve(y_val, y_pred_proba)
+        accuracy = accuracy_score(y_val_bin, y_pred)
+        recall = recall_score(y_val_bin, y_pred, zero_division=0)
+        precision = precision_score(y_val_bin, y_pred, zero_division=0)
+        f1 = f1_score(y_val_bin, y_pred, zero_division=0)
+        fpr, tpr, _ = roc_curve(y_val_bin, y_pred_proba)
         auc_score = auc(fpr, tpr)
 
         all_metrics["accuracy"].append(accuracy)
@@ -320,8 +359,8 @@ def kfold_evaluation(x, y, cv_folds, model_name, C, kernel, feature_names, task_
         buf.close()
         plt.close()
 
-        shap_result = explain_with_shap(model, x_val, feature_names)
-        lime_result = explain_with_lime(model, x_val, y_val, feature_names)
+        shap_result = explain_with_shap(model, x_val, feature_names, focus_class=focus_class)
+        lime_result = explain_with_lime(model, x_val, y_val, feature_names, focus_class=focus_class)
 
         folds_result.append({
             "fold": fold_index,
@@ -386,10 +425,10 @@ def main(file_path, label_column, split_strategy, split_value, model_name, C, ke
             )
             model = train_svm(x_train, y_train, x_test, y_test, model_name, C, kernel, task_dir)
             y_pred = model.predict(x_test)
-            results = evaluate_model(y_test, y_pred, model, x_test)
-            shap_result = explain_with_shap(model, x_test, feature_names)
+            results = evaluate_model(y_test, y_pred, model, x_test, focus_class=1)
+            shap_result = explain_with_shap(model, x_test, feature_names, focus_class=1)
             results.update(shap_result)
-            lime_result = explain_with_lime(model, x_test, y_test, feature_names)
+            lime_result = explain_with_lime(model, x_test, y_test, feature_names, focus_class=1)
             results.update(lime_result)
         except ValueError as e:
             print(json.dumps({
@@ -407,6 +446,7 @@ def main(file_path, label_column, split_strategy, split_value, model_name, C, ke
                 C, kernel,
                 feature_names,
                 task_dir,
+                focus_class=1,
             )
         except ValueError as e:
             print(json.dumps({

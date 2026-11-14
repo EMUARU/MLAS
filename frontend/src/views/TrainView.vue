@@ -411,6 +411,63 @@
       </div>
     </template>
 
+    <!-- TabPFN 參數 -->
+    <template v-if="selected.model_type === 'tabpfn'">
+      <div class="row mb-3">
+        <label class="col-sm-3 col-form-label">
+          {{ $t('lblParameter') }}
+        </label>
+
+        <!-- 模型版本 -->
+        <div class="col-sm-4">
+          <div class="form-floating mb-1">
+            <select
+              v-model="selected.tabpfn.model_version"
+              class="form-select"
+              id="floatingTabpfnModelVersion"
+              :disabled="loading"
+            >
+              <option value="default">default (v2.5)</option>
+              <option value="v2">v2</option>
+            </select>
+            <label for="floatingTabpfnModelVersion">
+              {{ $t('lblTabpfnModelVersion') }}
+            </label>
+          </div>
+          <small class="text-muted">
+            {{ $t('msgTabpfnModelVersionHint') }}
+          </small>
+        </div>
+
+        <!-- Ensemble 數量 -->
+        <div class="col-sm-3 mt-3 mt-sm-0">
+          <div class="form-floating mb-1">
+            <input
+              v-model.number="selected.tabpfn.n_ensembles"
+              type="number"
+              min="1"
+              max="32"
+              :placeholder="$t('lblDefaultValue', { value: 4 })"
+              class="form-control"
+              id="floatingTabpfnNEnsembles"
+              :disabled="loading"
+            />
+            <label for="floatingTabpfnNEnsembles">
+              {{ $t('lblTabpfnNEnsembles') }}
+            </label>
+          </div>
+          <div
+            v-if="errors.n_ensembles"
+            class="text-danger small"
+          >
+            {{ errors.n_ensembles }}
+          </div>
+        </div>
+      </div>
+    </template>
+
+
+
     <!-- 表格式資料 -->
     <div class="row mb-3">
       <label class="col-sm-3 col-form-label">{{ $t('lblTabularData') }}</label>
@@ -1005,6 +1062,14 @@
           <li><code>patience</code>{{ $t('msgTrainNoteTabnet4') }}</li>
         </ol>
       </li>
+      <li>{{ $t('lblTabPFN') }}
+        <ol type="i">
+          <li>{{ $t('msgTrainNoteTabpfn1') }}</li>
+          <li>{{ $t('msgTrainNoteTabpfn2') }}</li>
+          <li>{{ $t('msgTrainNoteTabpfn3') }}</li>
+          <li><code>n_ensembles</code>{{ $t('msgTrainNoteTabpfn4') }}</li>
+        </ol>
+      </li>
       <li>{{ $t('lblMultiLayerPerceptron') }}
         <ol type="i">
           <li>{{ $t('msgTrainNoteMlp8') }}</li>
@@ -1063,6 +1128,7 @@ export default {
         catboost: this.$t('lblCatBoost'),
         adaboost: this.$t('lblAdaBoost'),
         svm: this.$t('lblSvm'),
+        tabpfn: this.$t('lblTabPFN'),
       },
       preview_data: {
         columns: [],
@@ -1135,6 +1201,10 @@ export default {
           max_epochs: '2',
           patience: '10',
         },
+        tabpfn: {
+          model_version: 'default',
+          n_ensembles: '',
+        },
         mlp: {
           hidden_layer_1: '128',
           hidden_layer_2: '64',
@@ -1182,7 +1252,9 @@ export default {
       imageAccuracy: null,
       imageShap: null,
       imageLime: null,
-      errors: {}, // 檢核用
+      errors: {
+        n_ensembles: '',
+      }, // 檢核用
       errors_preprocess: {},
       fileOptions: [],
       isUnmounted: false, // 防止跳轉後，API執行完仍繼續執行js，造成錯誤
@@ -1543,7 +1615,23 @@ export default {
           this.errors.kernel = this.$t('msgValRequired')
           isValid = false
         }
+      } else if (this.selected.model_type === 'tabpfn') {
+        const val = this.selected.tabpfn.n_ensembles
+
+        if (val !== '' && val !== null && val !== undefined) {
+          const n = Number(val)
+
+          if (!Number.isInteger(n) || n < 1) {
+            this.errors.n_ensembles = this.$t('msgErrorTabpfnNEnsemblesInteger')
+            isValid = false
+          } else if (n > 32) {
+            this.errors.n_ensembles = this.$t('msgErrorTabpfnNEnsemblesTooLarge')
+            isValid = false
+          }
+        }
       }
+
+
 
       // File Selection (data)
       if (!this.selected.data) {
@@ -1728,7 +1816,7 @@ export default {
           payload["batch_size"] = this.selected.tabnet.batch_size
           payload["max_epochs"] = this.selected.tabnet.max_epochs
           payload["patience"] = this.selected.tabnet.patience
-        } else if (this.selected.model_type == "mlp") {
+        }  else if (this.selected.model_type == "mlp") {
           api = "run-train-mlp"
           payload["hidden_layer_1"] = this.selected.mlp.hidden_layer_1
           payload["hidden_layer_2"] = this.selected.mlp.hidden_layer_2
@@ -1751,6 +1839,13 @@ export default {
           api = "run-train-svm"
           payload["C"] = this.selected.svm.C
           payload["kernel"] = this.selected.svm.kernel
+        } else if (this.selected.model_type === 'tabpfn') {
+          api = 'run-train-tabpfn'
+          payload.model_version = this.selected.tabpfn.model_version
+          const val = this.selected.tabpfn.n_ensembles
+          if (val !== '' && val !== null && val !== undefined) {
+            payload.n_ensembles = Number(val)
+          }
         } else {
           this.output = {
             "status": "error",

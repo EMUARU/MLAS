@@ -17,6 +17,28 @@ def collect_user_status(user_dir):
         if not os.path.isdir(task_dir):
             continue
 
+        # 合成任務位於 synthetic/ 子資料夾內，多掃一層（新增）
+        if task_id == "synthetic":
+            for syn_task_id in os.listdir(task_dir):
+                syn_task_dir = os.path.join(task_dir, syn_task_id)
+                if not os.path.isdir(syn_task_dir):
+                    continue
+                syn_status_path = os.path.join(syn_task_dir, "status.json")
+                if not os.path.exists(syn_status_path):
+                    continue
+                try:
+                    with open(syn_status_path, "r", encoding="utf-8") as f:
+                        syn_data = json.load(f)
+                    syn_data["task_id"] = syn_task_id
+                    result.append(syn_data)
+                except Exception as e:
+                    print(json.dumps({
+                        "status": "error",
+                        "message": f"Failed to read {syn_status_path}: {str(e)}"
+                    }))
+                    sys.exit(1)
+            continue
+
         status_path = os.path.join(task_dir, "status.json")
         if not os.path.exists(status_path):
             continue
