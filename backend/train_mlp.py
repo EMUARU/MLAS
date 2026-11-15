@@ -67,12 +67,23 @@ def train_mlp(x_train, y_train, model_name, hidden_layer_1, hidden_layer_2, hidd
 
     return mlp, mlp.loss_curve_, mlp.validation_scores_
 
-def evaluate_model(y_test, y_pred, model, x_test):
-    y_test = y_test.astype(float)
-    y_pred = y_pred.astype(float)
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+def evaluate_model(y_test, y_pred, model, x_test, focus_class=1):
+    # 多類別時以 focus_class 做 one-vs-rest，與 train_rf.py 等其他模型一致
+    y_pred_proba = model.predict_proba(x_test)
+    num_class = int(y_pred_proba.shape[1])
+    if num_class > 2:
+        focus_class = int(focus_class)
+        y_test = (np.asarray(y_test).astype(int) == focus_class).astype(float)
+        y_pred = (y_pred_proba[:, focus_class] >= 0.5).astype(float)
+        y_pred_proba = np.column_stack([1 - y_pred_proba[:, focus_class], y_pred_proba[:, focus_class]])
+    else:
+        y_test = y_test.astype(float)
+        y_pred = y_pred.astype(float)
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
     result = {
         "status": "success",
+        "num_class": num_class,
+        "focus_class": int(focus_class) if num_class > 2 else 1,
         "confusion_matrix": {
             "true_negative": tn,
             "false_positive": fp,
@@ -81,14 +92,13 @@ def evaluate_model(y_test, y_pred, model, x_test):
         },
         "metrics": {
             "accuracy": float(accuracy_score(y_test, y_pred) * 100),
-            "recall": float(recall_score(y_test, y_pred) * 100),
-            "precision": float(precision_score(y_test, y_pred) * 100),
-            "f1_score": float(f1_score(y_test, y_pred) * 100),
+            "recall": float(recall_score(y_test, y_pred, zero_division=0) * 100),
+            "precision": float(precision_score(y_test, y_pred, zero_division=0) * 100),
+            "f1_score": float(f1_score(y_test, y_pred, zero_division=0) * 100),
         }
     }
 
     # recall 分析
-    y_pred_proba = model.predict_proba(x_test)
     thresh_list = []
     accuracy_score_list = []
     precision_score_list = []
@@ -100,7 +110,7 @@ def evaluate_model(y_test, y_pred, model, x_test):
     for th in range(1,101):
         th *= 0.01
         y_pred = [0 if (x[0] >= th) else 1 for x in y_pred_proba]
-        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+        tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
         specificity = tn / (tn+fp) if (tn + fp) > 0 else 0
         npv = tn / (fn+tn) if (fn + tn) > 0 else 0
         thresh_list.append(th)
@@ -342,20 +352,22 @@ def kfold_evaluation(X, y, cv_folds, model_name, hidden_layer_1, hidden_layer_2,
             activation, learning_rate_init, max_iter, n_iter_no_change, task_dir
         )
 
+        # 多類別時以類別 1 做 one-vs-rest，與 train_rf.py 等其他模型一致
         y_pred_proba = model.predict_proba(X_test)[:, 1]
         y_pred = (y_pred_proba >= 0.5).astype(int)
-        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+        y_test_bin = (y_test == 1).astype(int) if len(model.classes_) > 2 else y_test
+        tn, fp, fn, tp = confusion_matrix(y_test_bin, y_pred, labels=[0, 1]).ravel()
 
         total_tn += tn
         total_fp += fp
         total_fn += fn
         total_tp += tp
 
-        accuracy = accuracy_score(y_test, y_pred)
-        recall = recall_score(y_test, y_pred, zero_division=0)
-        precision = precision_score(y_test, y_pred, zero_division=0)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
-        fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+        accuracy = accuracy_score(y_test_bin, y_pred)
+        recall = recall_score(y_test_bin, y_pred, zero_division=0)
+        precision = precision_score(y_test_bin, y_pred, zero_division=0)
+        f1 = f1_score(y_test_bin, y_pred, zero_division=0)
+        fpr, tpr, _ = roc_curve(y_test_bin, y_pred_proba)
         auc_score = auc(fpr, tpr)
 
         all_metrics["accuracy"].append(accuracy)

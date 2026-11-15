@@ -327,26 +327,22 @@ def kfold_evaluation(x, y, cv_folds, model_name, n_estimators, learning_rate, de
         x_train, x_val = x[train_idx], x[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
         model, evals_result = train_adaboost(x_train, y_train, x_val, y_val, f"{model_name}_fold_{fold_index}", n_estimators, learning_rate, depth, task_dir)
-        y_pred_proba = model.predict_proba(x_val)[:, 1]
+        # 多類別時以 focus_class 做 one-vs-rest，與 train_rf.py 等其他模型一致
+        y_pred_proba = model.predict_proba(x_val)[:, int(focus_class)]
         y_pred = (y_pred_proba >= 0.5).astype(int)
-        tn, fp, fn, tp = confusion_matrix(y_val, y_pred).ravel()
+        y_val_bin = (y_val == int(focus_class)).astype(int) if len(model.classes_) > 2 else y_val
+        tn, fp, fn, tp = confusion_matrix(y_val_bin, y_pred, labels=[0, 1]).ravel()
 
         total_tn += tn
         total_fp += fp
         total_fn += fn
         total_tp += tp
 
-        accuracy = accuracy_score(y_val, y_pred)
-        recall = recall_score(y_val, y_pred)
-        precision = precision_score(y_val, y_pred)
-        f1 = f1_score(y_val, y_pred)
-        auc_score = auc(*roc_curve(y_val, y_pred_proba)[:2])
-
         accuracy = (tp + tn) / (tp + tn + fp + fn)
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        fpr, tpr, _ = roc_curve(y_val, y_pred_proba)
+        fpr, tpr, _ = roc_curve(y_val_bin, y_pred_proba)
         auc_score = auc(fpr, tpr)
 
         all_metrics["accuracy"].append(accuracy)

@@ -14,7 +14,7 @@
 | 合計 | 303 | |
 
 擴充功能的 222 個已在開發環境（Windows、Python 3.11、GPU）全部通過。
-原系統回歸的 81 個已於同日在開發環境執行：76 個通過，5 個為已知問題（見下方）。
+原系統回歸的 81 個：整合時發現 5 個原系統問題並已修正（見下方）。
 
 數量說明：pytest 以「參數化」把每個邊界值、每種運算子各算一個案例，
 例如自動參數的 12 個分段邊界由同一個測試函式產生 12 個案例。
@@ -42,22 +42,18 @@
 | test_tabpfn_pipeline.py | 2 | 實際執行 train_tabpfn.py（train_test_split、k_fold），需下載權重 |
 | test_regression_models.py | 81 | 讀取 test_all.bat 的案例執行：10 種模型的訓練（train_test_split、k_fold）、評估、檔案與手動輸入預測、堆疊學習。除結束碼外，也檢查輸出沒有 "status": "error" |
 
-### 已知問題（回歸測試中標記為 xfail）
+### 整合時發現並已修正的問題
 
-test_all.bat 只看結束碼，下列 3 個案例在 .bat 顯示 OK，但腳本實際回傳錯誤。
-原因是多類別時 confusion_matrix 為 N×N，程式卻以 tn, fp, fn, tp 四個值展開：
+整合回歸測試時發現 5 個原系統的問題，已於 2026-11-15 修正：
 
-- train_mlp.py：多類別 train_test_split、多類別 k_fold
-- train_adaboost.py：多類別 k_fold
+| 問題 | 現象 | 修正 |
+| --- | --- | --- |
+| train_mlp.py 多類別（train_test_split、k_fold） | confusion_matrix 為 N×N，卻以 tn, fp, fn, tp 四個值展開，腳本回傳錯誤 | 與 train_rf.py 等模型一致，多類別時以 focus_class 做 one-vs-rest |
+| train_adaboost.py 多類別 k_fold | 同上 | 同上 |
+| evaluate.py、predict.py 的 CatBoost 多類別模型 | 以 shap.Explainer(model, x_test)（帶背景資料）解析樹時，shap 在原生程式中記憶體損毀，行程崩潰（Windows 結束碼 0xC0000374） | 與 train_catboost.py 相同，CatBoost 改用不帶背景資料的 shap.Explainer(model) |
 
-另有 2 個是程式崩潰，test_all.bat 會顯示 FAIL：
-
-- evaluate.py、predict.py：CatBoost 多類別模型。以 shap.Explainer(model, x_test)（帶背景資料）
-  解析樹時，shap 0.47 在原生程式中發生記憶體損毀，行程直接結束
-  （Windows 結束碼 3221226356 = 0xC0000374、Linux 顯示 double free）。
-  train_catboost.py 用 shap.Explainer(model)（不帶背景資料）則正常。
-
-修正後，pytest 會因「預期失敗卻通過」提示移除標記。
+前 3 個在 test_all.bat 中會顯示 OK，因為 .bat 只看結束碼，而腳本出錯時仍正常結束、只在輸出中回報
+"status": "error"。pytest 版本多檢查了這一點才發現。
 
 ## 與 test_all.bat 的關係
 

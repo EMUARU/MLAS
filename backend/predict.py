@@ -225,7 +225,12 @@ def explain_with_shap(model, x_test, feature_names, focus_class=1):
                 shap_values_for_plot = shap_values
 
         else:
-            explainer = shap.Explainer(model, x_test)
+            # CatBoost 多類別模型帶背景資料時，shap 解析樹會發生記憶體損毀而使行程崩潰，
+            # 因此與 train_catboost.py 相同，不帶背景資料（path-dependent TreeExplainer）
+            if type(model).__name__.startswith("CatBoost"):
+                explainer = shap.Explainer(model)
+            else:
+                explainer = shap.Explainer(model, x_test)
             shap_values = explainer(x_test)
             shap_data = x_test
 
