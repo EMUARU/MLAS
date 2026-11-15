@@ -14,7 +14,7 @@
 | 合計 | 303 | |
 
 擴充功能的 222 個已在開發環境（Windows、Python 3.11、GPU）全部通過。
-原系統回歸的 81 個中，有 3 個標記為已知問題（見下方）。
+原系統回歸的 81 個已於同日在開發環境執行：76 個通過，5 個為已知問題（見下方）。
 
 數量說明：pytest 以「參數化」把每個邊界值、每種運算子各算一個案例，
 例如自動參數的 12 個分段邊界由同一個測試函式產生 12 個案例。
@@ -44,11 +44,18 @@
 
 ### 已知問題（回歸測試中標記為 xfail）
 
-test_all.bat 只看結束碼，下列案例在 .bat 顯示 OK，但腳本實際回傳錯誤。
+test_all.bat 只看結束碼，下列 3 個案例在 .bat 顯示 OK，但腳本實際回傳錯誤。
 原因是多類別時 confusion_matrix 為 N×N，程式卻以 tn, fp, fn, tp 四個值展開：
 
 - train_mlp.py：多類別 train_test_split、多類別 k_fold
 - train_adaboost.py：多類別 k_fold
+
+另有 2 個是程式崩潰，test_all.bat 會顯示 FAIL：
+
+- evaluate.py、predict.py：CatBoost 多類別模型。以 shap.Explainer(model, x_test)（帶背景資料）
+  解析樹時，shap 0.47 在原生程式中發生記憶體損毀，行程直接結束
+  （Windows 結束碼 3221226356 = 0xC0000374、Linux 顯示 double free）。
+  train_catboost.py 用 shap.Explainer(model)（不帶背景資料）則正常。
 
 修正後，pytest 會因「預期失敗卻通過」提示移除標記。
 

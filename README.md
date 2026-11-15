@@ -121,8 +121,8 @@ backend/test_all.bat 是 81 個回歸案例的清單。tests/integration/test_re
 - 手動輸入預測: 5 個
 - 堆疊學習: 單一 base model、兩兩組合、三個以上組合、不同 meta model
 
-其中 3 個案例（train_mlp.py 多類別、train_adaboost.py 多類別 k_fold）為已知問題，
-詳見 backend/tests/README.md。
+其中 5 個案例為已知問題（train_mlp.py 多類別、train_adaboost.py 多類別 k_fold、
+CatBoost 多類別模型在評估與預測時的 SHAP 崩潰），詳見 backend/tests/README.md。
 
 ## 部署（正式站）
 

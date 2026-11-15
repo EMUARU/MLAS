@@ -56,12 +56,17 @@ def load_cases():
 
 SETUP, CASES = load_cases()
 
-# 原系統程式中已知的問題：多類別時 confusion_matrix 為 N×N，卻以 tn, fp, fn, tp 四個值展開。
+# 原系統程式中已知的問題。前三個：多類別時 confusion_matrix 為 N×N，卻以 tn, fp, fn, tp 四個值展開。
 # test_all.bat 只看結束碼，這些案例在 .bat 會顯示 OK，但腳本實際回傳 "status": "error"。
 KNOWN_BUGS = {
     "step1-12-MLP_mul": "train_mlp.py 多類別 train_test_split：confusion_matrix(...).ravel() 展開成 4 個值失敗",
     "step2-7-MLP_kf_mul": "train_mlp.py 多類別 k_fold：confusion_matrix(...).ravel() 展開成 4 個值失敗",
     "step2-8-AdaBoost_kf_mul": "train_adaboost.py 多類別 k_fold：confusion_matrix(y_val, y_pred).ravel() 展開成 4 個值失敗",
+    # CatBoost 多類別模型：evaluate.py / predict.py 以 shap.Explainer(model, x_test)（帶背景資料）解析樹時，
+    # shap 0.47 在原生程式中記憶體損毀，行程直接崩潰（Windows 0xC0000374、Linux double free）。
+    # train_catboost.py 用 shap.Explainer(model)（不帶背景資料）則正常。
+    "step3-9-eval_CatBoost_mul": "evaluate.py：CatBoost 多類別模型的 SHAP 解析使行程崩潰（記憶體損毀）",
+    "step4-9-pred_CatBoost_mul": "predict.py：CatBoost 多類別模型的 SHAP 解析使行程崩潰（記憶體損毀）",
 }
 
 
